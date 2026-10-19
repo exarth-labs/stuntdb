@@ -43,8 +43,6 @@ These rules keep stuntdb safe, and able to support many databases:
 - **The source database is read-only.** stuntdb must never write to it.
 - **Command output is a contract.** Results go to stdout, messages go to stderr, and the exit codes are documented. Discuss any change to them in an issue first.
 
-Significant design decisions are recorded in [docs/adr](docs/adr).
-
 ## Reporting bugs and requesting features
 
 Use the issue templates.

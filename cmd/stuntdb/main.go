@@ -12,7 +12,7 @@ import (
 	"github.com/exarth-labs/stuntdb/internal/errs"
 )
 
-// Exit codes are part of stuntdb's public contract. Change them only through an ADR.
+// Exit codes are part of stuntdb's public contract: never renumber an existing code.
 const (
 	exitOK           = 0
 	exitError        = 1
