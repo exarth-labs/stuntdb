@@ -1,0 +1,28 @@
+# Build output
+/bin/
+/dist/
+
+# Go
+*.exe
+*.test
+*.out
+*.prof
+coverage.html
+go.work
+go.work.sum
+
+# stuntdb output: never commit snapshots or unfinished files
+*.stuntdb
+*.partial-*
+!testdata/**/*.stuntdb
+
+# Local environment and secrets
+.env
+.env.*
+
+# Editors and operating systems
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db

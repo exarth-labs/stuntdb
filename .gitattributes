@@ -1,0 +1,17 @@
+# Use LF line endings in the repository and on every operating system,
+# so Windows and macOS/Linux contributors don't produce noisy diffs.
+* text=auto eol=lf
+
+# Windows-only scripts keep CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary files: never change their bytes.
+*.db binary
+*.sqlite binary
+*.stuntdb binary
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
+*.zip binary
