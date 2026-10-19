@@ -1,0 +1,78 @@
+# Release recipe. Pushing a tag such as v0.0.1 runs it in GitHub Actions
+# (.github/workflows/release.yml). To try it locally without publishing:
+#
+#   goreleaser release --snapshot --clean --skip=sign,sbom
+version: 2
+
+project_name: stuntdb
+
+before:
+  hooks:
+    - go mod tidy -diff # fail if go.mod or go.sum is out of date
+
+builds:
+  - id: stuntdb
+    main: ./cmd/stuntdb
+    binary: stuntdb
+    env:
+      - CGO_ENABLED=0 # pure Go: one static binary, nothing to install
+    goos: [linux, windows, darwin]
+    goarch: [amd64, arm64]
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/exarth-labs/stuntdb/internal/buildinfo.version=v{{ .Version }}
+      - -X github.com/exarth-labs/stuntdb/internal/buildinfo.commit={{ .FullCommit }}
+      - -X github.com/exarth-labs/stuntdb/internal/buildinfo.date={{ .CommitDate }}
+    mod_timestamp: "{{ .CommitTimestamp }}" # reproducible builds
+
+universal_binaries:
+  - replace: true # one macOS binary for both Intel and Apple Silicon
+
+archives:
+  - formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - README.md
+      - CHANGELOG.md
+
+checksum:
+  name_template: checksums.txt
+
+# A list of everything inside each archive (SBOM), made with Syft.
+sboms:
+  - artifacts: archive
+
+# Keyless signing: GitHub Actions proves its identity to Sigstore, so there is
+# no long-lived private key to store or leak.
+signs:
+  - cmd: cosign
+    signature: "${artifact}.sigstore.json"
+    args: ["sign-blob", "--bundle=${signature}", "${artifact}", "--yes"]
+    artifacts: checksum
+
+release:
+  # Every 0.x release is a pre-release: early versions, not for production use.
+  prerelease: "true"
+  name_template: "v{{ .Version }}"
+
+changelog:
+  use: github
+  sort: asc
+  groups:
+    - title: Features
+      regexp: '^.*?feat(\(.+\))??!?:.+$'
+      order: 0
+    - title: Fixes
+      regexp: '^.*?fix(\(.+\))??!?:.+$'
+      order: 1
+    - title: Other changes
+      order: 999
+  filters:
+    exclude:
+      - "^Merge pull request"
