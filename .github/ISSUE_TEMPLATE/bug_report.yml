@@ -1,0 +1,55 @@
+name: Bug report
+description: Something doesn't work as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug!
+
+        **Never paste real production data** (names, emails, connection strings, passwords) in this issue.
+        For security problems, [report privately](https://github.com/exarth-labs/stuntdb/security/advisories/new) instead.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: The exact command and a minimal example schema help a lot.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: stuntdb version
+      description: The output of `stuntdb version`
+    validations:
+      required: true
+  - type: dropdown
+    id: database
+    attributes:
+      label: Database
+      options:
+        - SQLite
+        - PostgreSQL
+        - MySQL
+        - MariaDB
+        - SQL Server
+        - Oracle
+        - Other or not relevant
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: e.g. Windows 11, macOS 15, Ubuntu 24.04
+  - type: textarea
+    id: output
+    attributes:
+      label: Output or logs
+      description: Remove any real data first.
+      render: shell

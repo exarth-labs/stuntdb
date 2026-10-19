@@ -1,0 +1,75 @@
+# golangci-lint v2 configuration. Run with `task lint`; format with `task fmt`.
+version: "2"
+
+linters:
+  default: standard # errcheck, govet, ineffassign, staticcheck, unused
+  enable:
+    - depguard
+    - errorlint
+    - forbidigo
+    - gosec
+    - misspell
+    - nolintlint
+    - revive
+    - unconvert
+    - usestdlibvars
+
+  settings:
+    depguard:
+      rules:
+        # The core must never depend on a specific database. Database code
+        # (SQL, drivers) lives in dialects/<engine>/; cmd/stuntdb wires adapters in.
+        engine-neutral-core:
+          list-mode: lax
+          files:
+            - "**/internal/**"
+            - "**/dialect/**"
+            - "!**/internal/workspace/**" # the local workspace uses an embedded SQLite file
+          deny:
+            - pkg: github.com/exarth-labs/stuntdb/dialects
+              desc: the core must not import a specific database adapter
+            - pkg: database/sql
+              desc: database access belongs in dialects/<engine>/
+            - pkg: modernc.org/sqlite
+              desc: database drivers belong in dialects/<engine>/
+            - pkg: github.com/jackc/pgx
+              desc: database drivers belong in dialects/<engine>/
+            - pkg: github.com/go-sql-driver/mysql
+              desc: database drivers belong in dialects/<engine>/
+            - pkg: github.com/microsoft/go-mssqldb
+              desc: database drivers belong in dialects/<engine>/
+            - pkg: github.com/sijms/go-ora
+              desc: database drivers belong in dialects/<engine>/
+
+    forbidigo:
+      forbid:
+        - pattern: ^os\.Exit$
+          msg: exit codes are mapped only in cmd/stuntdb; return an error instead
+        - pattern: ^fmt\.Print(f|ln)?$
+          msg: write to an injected io.Writer (stdout for results, stderr for messages)
+        - pattern: ^print(ln)?$
+          msg: write to an injected io.Writer (stdout for results, stderr for messages)
+
+    misspell:
+      locale: US
+
+  exclusions:
+    presets:
+      - comments
+      - std-error-handling
+    rules:
+      - path: ^cmd/
+        linters:
+          - forbidigo
+      - path: _test\.go$
+        linters:
+          - gosec
+
+formatters:
+  enable:
+    - gofumpt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/exarth-labs/stuntdb

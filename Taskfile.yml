@@ -1,0 +1,71 @@
+# Development commands. Install Task from https://taskfile.dev, then run `task --list`.
+version: "3"
+
+vars:
+  BUILDINFO: github.com/exarth-labs/stuntdb/internal/buildinfo
+  VERSION:
+    sh: git describe --tags --always --dirty 2>/dev/null || echo dev
+  COMMIT:
+    sh: git rev-parse --short=12 HEAD 2>/dev/null || echo unknown
+  # The commit date, not the current time, so that builds are reproducible.
+  DATE:
+    sh: git log -1 --format=%cI 2>/dev/null || echo unknown
+  LDFLAGS: -s -w -X {{.BUILDINFO}}.version={{.VERSION}} -X {{.BUILDINFO}}.commit={{.COMMIT}} -X {{.BUILDINFO}}.date={{.DATE}}
+
+tasks:
+  default:
+    silent: true
+    cmds:
+      - task --list
+
+  build:
+    desc: Build the stuntdb binary into ./bin
+    env:
+      CGO_ENABLED: "0"
+    cmds:
+      - go build -trimpath -ldflags "{{.LDFLAGS}}" -o bin/stuntdb{{exeExt}} ./cmd/stuntdb
+
+  test:
+    desc: Run all tests
+    cmds:
+      - go test ./...
+
+  test:race:
+    desc: Run all tests with the race detector (needs a C compiler; CI always runs this)
+    env:
+      CGO_ENABLED: "1"
+    cmds:
+      - go test -race ./...
+
+  cover:
+    desc: Run all tests and write a coverage report to coverage.html
+    cmds:
+      - go test -coverprofile=coverage.out ./...
+      - go tool cover -html=coverage.out -o coverage.html
+
+  lint:
+    desc: Run the linters
+    cmds:
+      - golangci-lint run
+
+  fmt:
+    desc: Format all Go code
+    cmds:
+      - golangci-lint fmt
+
+  tidy:
+    desc: Tidy go.mod and go.sum
+    cmds:
+      - go mod tidy
+
+  check:
+    desc: Run everything CI checks (lint, tests, build). Run this before opening a pull request.
+    cmds:
+      - task: lint
+      - task: test
+      - task: build
+
+  clean:
+    desc: Remove build output
+    cmds:
+      - rm -rf bin dist coverage.out coverage.html
