@@ -64,6 +64,12 @@ linters:
       - path: _test\.go$
         linters:
           - gosec
+      # The value package stores signed numbers in an unsigned field on purpose
+      # (two's complement), and range-checks every narrowing conversion first.
+      - path: ^internal/value/
+        linters:
+          - gosec
+        text: G115
 
 formatters:
   enable:
