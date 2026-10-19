@@ -28,7 +28,7 @@ type Info struct {
 func Get() Info {
 	info := Info{
 		Version:  version,
-		Commit:   commit,
+		Commit:   shortCommit(commit), // release builds pass the full commit hash
 		Date:     date,
 		Go:       runtime.Version(),
 		Platform: runtime.GOOS + "/" + runtime.GOARCH,
