@@ -1,0 +1,23 @@
+name: Database support request
+description: Ask for support for a database engine or version
+labels: ["enhancement"]
+body:
+  - type: input
+    id: engine
+    attributes:
+      label: Database engine and version
+      placeholder: e.g. CockroachDB 25.2, MariaDB 11.8, IBM Db2 12
+    validations:
+      required: true
+  - type: textarea
+    id: use-case
+    attributes:
+      label: How would you use stuntdb with it?
+    validations:
+      required: true
+  - type: checkboxes
+    id: help
+    attributes:
+      label: Can you help?
+      options:
+        - label: I can help build or test an adapter for this database
