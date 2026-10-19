@@ -49,7 +49,10 @@ type Table struct {
 	Indexes     []*Index
 	Checks      []*Check
 
-	// Native is the engine's own CREATE TABLE statement.
+	// Native is the engine's own CREATE TABLE statement, when it has one
+	// (SQLite, MySQL, Oracle). PostgreSQL and SQL Server have no single
+	// statement, so their adapters leave it empty and rebuild the table from
+	// the native fragments kept on columns, constraints and indexes.
 	Native string
 
 	// EstimatedRows comes from the engine's statistics; -1 means unknown.
