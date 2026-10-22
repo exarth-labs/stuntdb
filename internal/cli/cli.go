@@ -2,7 +2,8 @@
 // calls the application layer and renders results; it holds no business logic.
 //
 // Results go to stdout and messages go to stderr, so that stdout stays clean
-// for scripts and pipes.
+// for scripts and pipes. Every error is redacted before it is printed or
+// returned, so that no secret or row value reaches the screen.
 package cli
 
 import (
@@ -15,19 +16,30 @@ import (
 
 	"github.com/exarth-labs/stuntdb/internal/buildinfo"
 	"github.com/exarth-labs/stuntdb/internal/errs"
+	"github.com/exarth-labs/stuntdb/internal/redact"
 )
 
-// globalOptions holds the flags that every command accepts.
+// globalOptions holds the flags that every command accepts, and what all
+// commands share.
 type globalOptions struct {
 	json bool
+
+	// redactor removes secrets and row values from errors and logs.
+	// Commands register the secrets they handle, such as connection URLs.
+	redactor *redact.Redactor
 }
 
-// Execute runs stuntdb with args. The returned error carries an errs.Kind.
+// Execute runs stuntdb with args. The returned error carries an errs.Kind,
+// and its message is already redacted.
 func Execute(ctx context.Context, args []string, stdout, stderr io.Writer) error {
-	root := newRootCmd(stdout, stderr)
+	opts := &globalOptions{redactor: redact.New()}
+	root := newRootCmd(stdout, stderr, opts)
 	root.SetArgs(args)
+	return reportError(stderr, opts.redactor, root.ExecuteContext(ctx))
+}
 
-	err := root.ExecuteContext(ctx)
+// reportError gives err a kind if it has none, redacts it, and prints it.
+func reportError(stderr io.Writer, redactor *redact.Redactor, err error) error {
 	if err == nil {
 		return nil
 	}
@@ -36,6 +48,7 @@ func Execute(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	if _, ok := errors.AsType[*errs.Error](err); !ok {
 		err = errs.E(errs.Usage, err)
 	}
+	err = redactor.Error(err)
 	fmt.Fprintf(stderr, "stuntdb: %v\n", err)
 	if errs.KindOf(err) == errs.Usage {
 		fmt.Fprintln(stderr, "Run 'stuntdb --help' for usage.")
@@ -43,8 +56,7 @@ func Execute(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	return err
 }
 
-func newRootCmd(stdout, stderr io.Writer) *cobra.Command {
-	opts := &globalOptions{}
+func newRootCmd(stdout, stderr io.Writer, opts *globalOptions) *cobra.Command {
 	root := &cobra.Command{
 		Use:   "stuntdb",
 		Short: "Make small, safe, realistic copies of production databases",

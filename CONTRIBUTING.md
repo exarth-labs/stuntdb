@@ -39,7 +39,7 @@ Run `task` on its own to list every command.
 These rules keep stuntdb safe, and able to support many databases:
 
 - **The core never depends on a specific database.** Database-specific code (SQL, type names, drivers) lives only in `dialects/<engine>/`, and the linter enforces this.
-- **Never log or print real data values**, whether in errors, logs or test output.
+- **Never log or print real data values**, whether in errors, logs or test output. Every error is passed through `internal/redact` before it is shown, as a safety net. Database adapters must not rely on it: their own errors must contain no values, and the conformance suite checks this with planted "canary" values.
 - **The source database is read-only.** stuntdb must never write to it.
 - **Command output is a contract.** Results go to stdout, messages go to stderr, and the exit codes are documented. Discuss any change to them in an issue first.
 

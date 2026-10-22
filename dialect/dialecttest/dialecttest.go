@@ -9,9 +9,12 @@
 package dialecttest
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"errors"
+	"log/slog"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -55,6 +58,7 @@ func Run(t *testing.T, h Harness) {
 	t.Run("CommitNeedsReplace", func(t *testing.T) { testReplace(t, h) })
 	t.Run("FinishChecksForeignKeys", func(t *testing.T) { testForeignKeys(t, h) })
 	t.Run("EmptyText", func(t *testing.T) { testEmptyText(t, h) })
+	t.Run("ErrorsHideValues", func(t *testing.T) { testErrorsHideValues(t, h) })
 }
 
 func testOpenErrors(t *testing.T, h Harness) {
@@ -360,6 +364,73 @@ func testEmptyText(t *testing.T, h Harness) {
 	got := readAll(t, snap, dialect.ReadQuery{Table: notes, Columns: cols, OrderBy: []schema.Ident{"id"}})
 	compareRows(t, "'' in a nullable column", [][]value.Value{{value.Int(1), value.String("x"), value.Null()}}, got)
 }
+
+// testErrorsHideValues loads rows that break each kind of constraint, with a
+// canary in every value, and checks that neither the errors nor the logs
+// show any of them. Database messages often quote the values they complain
+// about; adapters must not pass them on.
+func testErrorsHideValues(t *testing.T, h Harness) {
+	db, people, notes := canaryDB(h.Namespace)
+	person := func(id, email, code value.Value) []value.Value { return []value.Value{id, email, code} }
+	str := value.String
+	tests := []struct {
+		name     string
+		data     map[schema.TableRef][][]value.Value
+		mustFail bool // false where an engine may accept the rows, such as SQLite with an over-long text
+	}{
+		{"duplicate primary key", map[schema.TableRef][][]value.Value{people: {
+			person(str("canary-pk"), str("canary-1@example.com"), str("canary1")),
+			person(str("canary-pk"), str("canary-2@example.com"), str("canary2")),
+		}}, true},
+		{"duplicate unique value", map[schema.TableRef][][]value.Value{people: {
+			person(str("canary-id-1"), str("canary-same@example.com"), value.Null()),
+			person(str("canary-id-2"), str("canary-same@example.com"), value.Null()),
+		}}, true},
+		{"NULL in a NOT NULL column", map[schema.TableRef][][]value.Value{people: {
+			person(str("canary-id-3"), value.Null(), str("canary3")),
+		}}, true},
+		{"value too long", map[schema.TableRef][][]value.Value{people: {
+			person(str("canary-id-4"), str("canary-4@example.com"), str("canary-far-too-long")),
+		}}, false},
+		{"missing parent row", map[schema.TableRef][][]value.Value{notes: {
+			{value.Int(1), str("canary-missing-parent")},
+		}}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+			conn, err := h.Dialect.Open(context.Background(), h.NewDatabase(t), dialect.OpenOptions{Role: dialect.Target, Logger: logger})
+			if err != nil {
+				t.Fatalf("Open: %v", err)
+			}
+			t.Cleanup(func() { _ = conn.Close() })
+			l, err := conn.Loader(context.Background(), dialect.LoadOptions{RunID: "canary"})
+			if err != nil {
+				t.Fatalf("Loader: %v", err)
+			}
+			defer func() { _ = l.Abort(context.Background()) }()
+
+			err = loadAll(context.Background(), l, db, tt.data)
+			if err == nil {
+				if tt.mustFail {
+					t.Error("the rows were accepted, although they break a constraint")
+				}
+				return
+			}
+			if strings.Contains(strings.ToLower(err.Error()), "canary") {
+				// Show where the value is, without the value itself.
+				t.Errorf("the error shows a row value: %q", canaryWord.ReplaceAllString(err.Error(), "<value>"))
+			}
+			if strings.Contains(strings.ToLower(logs.String()), "canary") {
+				t.Error("the logs show a row value")
+			}
+		})
+	}
+}
+
+// canaryWord matches a canary value in a message.
+var canaryWord = regexp.MustCompile(`(?i)canary[^\s'"(),]*`)
 
 // --- helpers ---
 
