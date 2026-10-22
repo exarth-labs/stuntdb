@@ -84,3 +84,40 @@ func shop(ns schema.Ident) (*schema.Database, map[schema.TableRef][][]value.Valu
 	}
 	return db, data
 }
+
+// canaryDB is the database testErrorsHideValues breaks: people with a text
+// primary key, a NOT NULL unique email and a short code, and notes that
+// must reference a person.
+func canaryDB(ns schema.Ident) (db *schema.Database, people, notes schema.TableRef) {
+	people = schema.TableRef{Namespace: ns, Name: "people"}
+	notes = schema.TableRef{Namespace: ns, Name: "notes"}
+	idType := value.Type{Kind: value.TypeString, MaxLen: 40}
+	db = &schema.Database{Namespaces: []*schema.Namespace{{
+		Name: ns,
+		Tables: []*schema.Table{
+			{
+				Name: "people",
+				Columns: []*schema.Column{
+					{Name: "id", Type: idType},
+					{Name: "email", Type: textType},
+					{Name: "code", Type: value.Type{Kind: value.TypeString, MaxLen: 8}, Nullable: true},
+				},
+				PrimaryKey: &schema.Key{Columns: []schema.Ident{"id"}},
+				Uniques:    []*schema.Key{{Columns: []schema.Ident{"email"}}},
+			},
+			{
+				Name: "notes",
+				Columns: []*schema.Column{
+					{Name: "id", Type: intType},
+					{Name: "person_id", Type: idType},
+				},
+				PrimaryKey: &schema.Key{Columns: []schema.Ident{"id"}},
+				ForeignKeys: []*schema.ForeignKey{{
+					Name: "notes_person", Columns: []schema.Ident{"person_id"},
+					Ref: people, RefColumns: []schema.Ident{"id"},
+				}},
+			},
+		},
+	}}}
+	return db, people, notes
+}
