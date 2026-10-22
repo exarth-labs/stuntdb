@@ -8,8 +8,8 @@
 //   - an empty string is stored as NULL, as in Oracle;
 //   - unquoted names fold to upper case, as in Oracle;
 //   - foreign keys and unique keys are checked only in Finish, after loading;
-//   - at most MaxParams bind parameters per statement, so long key lists are
-//     split, and Statements counts the statements;
+//   - at most MaxParams key values per read, so callers must send long key
+//     lists in batches, and Statements counts the reads;
 //   - rows come back in a reused slice, so callers that keep references break;
 //   - native SQL conditions are not supported.
 //
@@ -34,7 +34,8 @@ import (
 	"github.com/exarth-labs/stuntdb/internal/value"
 )
 
-// MaxParams is the bind-parameter limit per statement.
+// MaxParams is the limit on key values per read, reported as
+// Capabilities.MaxKeyValues.
 const MaxParams = 5
 
 // Dialect is the fake engine. Use New to make one.
@@ -91,6 +92,7 @@ func (c *conn) Capabilities() dialect.Capabilities {
 		EmptyStringIsNull: true,
 		TableNames:        dialect.FoldUpper,
 		ColumnNames:       dialect.FoldUpper,
+		MaxKeyValues:      MaxParams,
 	}
 }
 
@@ -166,11 +168,10 @@ func (s *snapshot) Read(_ context.Context, q dialect.ReadQuery) (dialect.RowIter
 	if err != nil {
 		return nil, err
 	}
-	statements, err := statementsFor(q.Where)
-	if err != nil {
-		return nil, err
+	if n := keyValues(q.Where); n > MaxParams {
+		return nil, fmt.Errorf("%w: %d key values, at most %d", dialect.ErrTooManyKeys, n, MaxParams)
 	}
-	s.d.statements.Add(statements)
+	s.d.statements.Add(1)
 
 	var matched [][]value.Value
 	for _, row := range s.s.rows[q.Table] {
@@ -209,18 +210,20 @@ func (s *snapshot) Read(_ context.Context, q dialect.ReadQuery) (dialect.RowIter
 	return &rowIter{rows: out, buf: make([]value.Value, len(q.Columns))}, nil
 }
 
-// statementsFor counts the statements a real engine with MaxParams would need.
-func statementsFor(p dialect.Predicate) (int64, error) {
-	keys, ok := p.(dialect.KeysIn)
-	if !ok {
-		return 1, nil
+// keyValues counts the KeysIn values in a condition.
+func keyValues(p dialect.Predicate) int {
+	switch p := p.(type) {
+	case dialect.KeysIn:
+		return len(p.Columns) * len(p.Keys)
+	case dialect.And:
+		n := 0
+		for _, sub := range p {
+			n += keyValues(sub)
+		}
+		return n
+	default:
+		return 0
 	}
-	width := len(keys.Columns)
-	if width > MaxParams {
-		return 0, fmt.Errorf("%w: a key of %d columns exceeds %d parameters", dialect.ErrNotSupported, width, MaxParams)
-	}
-	perStatement := MaxParams / width
-	return int64(max(1, (len(keys.Keys)+perStatement-1)/perStatement)), nil
 }
 
 func matches(t *schema.Table, row []value.Value, p dialect.Predicate) (bool, error) {
