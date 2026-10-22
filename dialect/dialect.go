@@ -15,6 +15,11 @@ import (
 // connected to, does not support.
 var ErrNotSupported = errors.New("dialect: not supported by this database")
 
+// ErrTooManyKeys is returned for a KeysIn read with more values than the
+// adapter's Capabilities.MaxKeyValues. Adapters never split such a read into
+// several statements, because its OrderBy and Limit would no longer hold.
+var ErrTooManyKeys = errors.New("dialect: more KeysIn values than the database allows in one read")
+
 // Dialect is a database engine adapter.
 type Dialect interface {
 	// Name is the adapter's name, such as "sqlite" or "postgres".
@@ -117,6 +122,29 @@ type Capabilities struct {
 	// case-sensitively while it never does for column names.
 	TableNames  IdentifierCase
 	ColumnNames IdentifierCase
+
+	// MaxKeyValues is the most key values (keys times key columns) that one
+	// KeysIn read can carry. Callers send longer lists in batches (see
+	// KeysPerRead), so that every read is a single statement and its
+	// OrderBy and Limit hold. Adapters leave room for the few other
+	// parameters a read can have, such as an After key. 0 means
+	// DefaultMaxKeyValues.
+	MaxKeyValues int
+}
+
+// DefaultMaxKeyValues is the KeysIn limit of an adapter that sets none. Every
+// engine allows it: 1,000 is Oracle's limit for one IN list, and below every
+// other engine's parameter limit.
+const DefaultMaxKeyValues = 1000
+
+// KeysPerRead returns how many keys of the given number of columns one
+// KeysIn read can carry. It is at least 1.
+func (c Capabilities) KeysPerRead(columns int) int {
+	limit := c.MaxKeyValues
+	if limit <= 0 {
+		limit = DefaultMaxKeyValues
+	}
+	return max(1, limit/max(1, columns))
 }
 
 // SnapshotMode says how an engine gives a consistent view for reading.

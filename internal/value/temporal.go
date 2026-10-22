@@ -80,10 +80,20 @@ func appendZone(dst []byte, offset int) []byte {
 	return dst
 }
 
-func appendTimestamp(dst []byte, v Value) []byte {
+// appendTimeOfDay appends a time of day, with its UTC offset when it has one.
+func appendTimeOfDay(dst []byte, v Value) []byte {
+	dst = appendClock(dst, int64(v.num))
+	if v.hasZone {
+		dst = appendZone(dst, int(v.zone))
+	}
+	return dst
+}
+
+// appendTimestamp appends a timestamp, with sep between the date and the time.
+func appendTimestamp(dst []byte, v Value, sep byte) []byte {
 	t := v.Timestamp()
 	dst = appendDate(dst, t)
-	dst = append(dst, 'T')
+	dst = append(dst, sep)
 	hour, minute, second := t.Clock()
 	nanos := int64(hour)*int64(time.Hour) + int64(minute)*int64(time.Minute) +
 		int64(second)*int64(time.Second) + int64(t.Nanosecond())
@@ -208,10 +218,11 @@ func parseTimeOfDay(s string) (Value, error) {
 	return TimeOfDayWithZone(time.Duration(nanos), offset)
 }
 
-func parseTimestamp(s string) (Value, error) {
+// parseTimestamp parses a timestamp with sep between the date and the time.
+func parseTimestamp(s string, sep byte) (Value, error) {
 	errInvalid := errors.New("value: invalid timestamp encoding")
 	year, month, day, rest, ok := parseDate(s)
-	if !ok || rest == "" || rest[0] != 'T' {
+	if !ok || rest == "" || rest[0] != sep {
 		return Value{}, errInvalid
 	}
 	nanos, rest, ok := parseClock(rest[1:])

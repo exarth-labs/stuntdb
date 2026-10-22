@@ -9,6 +9,7 @@
 package dialecttest
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"slices"
@@ -109,33 +110,66 @@ func testKeysIn(t *testing.T, h Harness) {
 	url := h.NewDatabase(t)
 	db, data := shop(h.Namespace)
 	load(t, h, url, db, data, dialect.LoadOptions{RunID: "keys-in"})
-	snap := snapshot(t, open(t, h, url, dialect.Source))
+	source := open(t, h, url, dialect.Source)
+	caps := source.Capabilities()
+	snap := snapshot(t, source)
 	users := schema.TableRef{Namespace: h.Namespace, Name: "users"}
 	items := schema.TableRef{Namespace: h.Namespace, Name: "order_items"}
+	id := []schema.Ident{"id"}
 
-	// More keys than any engine's smallest parameter limit, plus keys that don't exist.
+	// More keys than the smallest engine limit, plus keys that don't exist,
+	// sent in batches the way the core sends them.
 	var keys [][]value.Value
-	for id := int64(2); id <= 40; id += 2 {
-		keys = append(keys, []value.Value{value.Int(id)})
+	for n := int64(40); n >= 2; n -= 2 {
+		keys = append(keys, []value.Value{value.Int(n)})
 	}
-	got := readAll(t, snap, dialect.ReadQuery{
-		Table: users, Columns: []schema.Ident{"id"}, OrderBy: []schema.Ident{"id"},
-		Where: dialect.KeysIn{Columns: []schema.Ident{"id"}, Keys: keys},
-	})
+	var got [][]value.Value
+	for batch := range slices.Chunk(keys, caps.KeysPerRead(1)) {
+		got = append(got, readAll(t, snap, dialect.ReadQuery{
+			Table: users, Columns: id, Where: dialect.KeysIn{Columns: id, Keys: batch},
+		})...)
+	}
+	slices.SortFunc(got, func(a, b []value.Value) int { return cmp.Compare(a[0].Int(), b[0].Int()) })
 	compareRows(t, "even user ids", intRows(2, 4, 6, 8, 10, 12), got)
 
+	// One full batch is one read, so its order and its limit hold.
+	full := keys[len(keys)-min(len(keys), caps.KeysPerRead(1)):] // ..., 6, 4, 2
 	got = readAll(t, snap, dialect.ReadQuery{
-		Table: items, Columns: []schema.Ident{"order_id", "line"}, OrderBy: []schema.Ident{"order_id", "line"},
-		Where: dialect.KeysIn{Columns: []schema.Ident{"order_id", "line"}, Keys: [][]value.Value{
-			{value.Int(1), value.Int(1)}, {value.Int(1), value.Int(2)}, {value.Int(3), value.Int(1)}, {value.Int(99), value.Int(1)},
-		}},
+		Table: users, Columns: id, OrderBy: id, Limit: 2,
+		Where: dialect.KeysIn{Columns: id, Keys: full},
 	})
+	compareRows(t, "a full batch, ordered and limited", intRows(2, 4), got)
+
+	// A read over the limit is refused, not split.
+	over := make([][]value.Value, caps.KeysPerRead(1)+1)
+	for i := range over {
+		over[i] = []value.Value{value.Int(int64(i + 1))}
+	}
+	if it, err := snap.Read(context.Background(), dialect.ReadQuery{
+		Table: users, Columns: id, OrderBy: id, Where: dialect.KeysIn{Columns: id, Keys: over},
+	}); !errors.Is(err, dialect.ErrTooManyKeys) {
+		if err == nil {
+			_ = it.Close()
+		}
+		t.Errorf("a read over MaxKeyValues = %v, want ErrTooManyKeys", err)
+	}
+
+	pairs := [][]value.Value{
+		{value.Int(1), value.Int(1)}, {value.Int(1), value.Int(2)}, {value.Int(3), value.Int(1)}, {value.Int(99), value.Int(1)},
+	}
+	got = nil
+	for batch := range slices.Chunk(pairs, caps.KeysPerRead(2)) {
+		got = append(got, readAll(t, snap, dialect.ReadQuery{
+			Table: items, Columns: []schema.Ident{"order_id", "line"}, OrderBy: []schema.Ident{"order_id", "line"},
+			Where: dialect.KeysIn{Columns: []schema.Ident{"order_id", "line"}, Keys: batch},
+		})...)
+	}
 	compareRows(t, "composite keys", [][]value.Value{
 		{value.Int(1), value.Int(1)}, {value.Int(1), value.Int(2)}, {value.Int(3), value.Int(1)},
 	}, got)
 
 	got = readAll(t, snap, dialect.ReadQuery{
-		Table: users, Columns: []schema.Ident{"id"},
+		Table: users, Columns: id,
 		Where: dialect.KeysIn{Columns: []schema.Ident{"nickname"}, Keys: [][]value.Value{{value.Null()}}},
 	})
 	if len(got) != 0 {
@@ -304,8 +338,13 @@ func testEmptyText(t *testing.T, h Harness) {
 		}
 		_ = l.Abort(ctx)
 	} else if err != nil {
+		_ = l.Abort(ctx)
 		t.Fatalf("loading '' into a NOT NULL column: %v", err)
 	} else {
+		if err := l.Commit(ctx); err != nil {
+			_ = l.Abort(ctx)
+			t.Fatalf("Commit: %v", err)
+		}
 		snap := snapshot(t, open(t, h, url, dialect.Source))
 		got := readAll(t, snap, dialect.ReadQuery{Table: notes, Columns: cols, OrderBy: []schema.Ident{"id"}})
 		compareRows(t, "'' read back", [][]value.Value{{value.Int(1), value.String(""), value.String("x")}}, got)

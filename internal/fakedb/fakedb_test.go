@@ -62,23 +62,28 @@ func source(t *testing.T, d *Dialect, url string) dialect.Snapshot {
 	return s
 }
 
-func TestLongKeyListsAreSplit(t *testing.T) {
+func TestLongKeyListsAreRefused(t *testing.T) {
 	d := New()
-	seed(t, d, "fake:split", 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)
-	var keys [][]value.Value
-	for id := int64(1); id <= 12; id++ {
-		keys = append(keys, []value.Value{value.Int(id)})
+	seed(t, d, "fake:limit", 1, 2, 3, 4, 5, 6)
+	snap := source(t, d, "fake:limit")
+	read := func(n int64) error {
+		var keys [][]value.Value
+		for id := int64(1); id <= n; id++ {
+			keys = append(keys, []value.Value{value.Int(id)})
+		}
+		it, err := snap.Read(context.Background(), dialect.ReadQuery{
+			Table: people, Columns: []schema.Ident{"ID"}, Where: dialect.KeysIn{Columns: []schema.Ident{"ID"}, Keys: keys},
+		})
+		if err == nil {
+			_ = it.Close()
+		}
+		return err
 	}
-	before := d.Statements()
-	it, err := source(t, d, "fake:split").Read(context.Background(), dialect.ReadQuery{
-		Table: people, Columns: []schema.Ident{"ID"}, Where: dialect.KeysIn{Columns: []schema.Ident{"ID"}, Keys: keys},
-	})
-	if err != nil {
-		t.Fatal(err)
+	if err := read(MaxParams); err != nil {
+		t.Errorf("%d keys, exactly the limit: %v", MaxParams, err)
 	}
-	_ = it.Close()
-	if got := d.Statements() - before; got != 3 {
-		t.Errorf("12 keys with a limit of %d parameters took %d statements, want 3", MaxParams, got)
+	if err := read(MaxParams + 1); !errors.Is(err, dialect.ErrTooManyKeys) {
+		t.Errorf("%d keys, over the limit = %v, want ErrTooManyKeys", MaxParams+1, err)
 	}
 }
 
@@ -127,17 +132,18 @@ func TestUnsupportedReads(t *testing.T) {
 	tests := []struct {
 		name string
 		q    dialect.ReadQuery
+		want error
 	}{
-		{"native SQL", dialect.ReadQuery{Table: people, Columns: []schema.Ident{"ID"}, Where: dialect.Native{SQL: "ID = 1"}}},
-		{"key wider than the parameter limit", dialect.ReadQuery{Table: people, Columns: []schema.Ident{"ID"}, Where: dialect.KeysIn{
+		{"native SQL", dialect.ReadQuery{Table: people, Columns: []schema.Ident{"ID"}, Where: dialect.Native{SQL: "ID = 1"}}, dialect.ErrNotSupported},
+		{"key wider than the limit", dialect.ReadQuery{Table: people, Columns: []schema.Ident{"ID"}, Where: dialect.KeysIn{
 			Columns: []schema.Ident{"ID", "ID", "ID", "ID", "ID", "ID"},
 			Keys:    [][]value.Value{{value.Int(1), value.Int(1), value.Int(1), value.Int(1), value.Int(1), value.Int(1)}},
-		}}},
+		}}, dialect.ErrTooManyKeys},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if _, err := snap.Read(context.Background(), tt.q); !errors.Is(err, dialect.ErrNotSupported) {
-				t.Errorf("Read = %v, want ErrNotSupported", err)
+			if _, err := snap.Read(context.Background(), tt.q); !errors.Is(err, tt.want) {
+				t.Errorf("Read = %v, want %v", err, tt.want)
 			}
 		})
 	}

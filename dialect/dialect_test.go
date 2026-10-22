@@ -187,3 +187,23 @@ func TestSnapshotModeZeroValueClaimsNothing(t *testing.T) {
 		t.Error("SnapshotMode.String")
 	}
 }
+
+func TestKeysPerRead(t *testing.T) {
+	tests := []struct {
+		name    string
+		limit   int
+		columns int
+		want    int
+	}{
+		{"zero claims only the default", 0, 1, DefaultMaxKeyValues},
+		{"composite keys share the limit", 32000, 3, 10666},
+		{"a tiny limit", 5, 2, 2},
+		{"never below one key", 5, 9, 1},
+		{"no columns counts as one", 10, 0, 10},
+	}
+	for _, tt := range tests {
+		if got := (Capabilities{MaxKeyValues: tt.limit}).KeysPerRead(tt.columns); got != tt.want {
+			t.Errorf("%s: KeysPerRead(%d) with MaxKeyValues %d = %d, want %d", tt.name, tt.columns, tt.limit, got, tt.want)
+		}
+	}
+}

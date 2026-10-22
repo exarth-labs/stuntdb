@@ -36,8 +36,12 @@ type Predicate interface{ predicate() }
 
 // KeysIn matches rows whose Columns equal one of Keys, for fetching rows by
 // primary key or children by foreign key. Each key has one value per
-// column. Adapters split long lists to fit their engine's limits, and NULL
-// never matches.
+// column, and NULL never matches.
+//
+// One read carries at most Capabilities.MaxKeyValues values in all; callers
+// send longer lists in batches of Capabilities.KeysPerRead keys. Adapters run
+// every read as a single statement, and return ErrTooManyKeys rather than
+// split one.
 type KeysIn struct {
 	Columns []schema.Ident
 	Keys    [][]value.Value
