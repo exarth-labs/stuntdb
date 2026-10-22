@@ -10,6 +10,9 @@ import (
 
 	"github.com/exarth-labs/stuntdb/internal/cli"
 	"github.com/exarth-labs/stuntdb/internal/errs"
+
+	// Database adapters register themselves when imported.
+	_ "github.com/exarth-labs/stuntdb/dialects/sqlite"
 )
 
 // Exit codes are part of stuntdb's public contract: never renumber an existing code.

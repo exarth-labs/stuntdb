@@ -6,7 +6,7 @@ Database-specific code (SQL text, type names, drivers) belongs here and nowhere 
 
 | Engine | Folder | Status |
 |---|---|---|
-| SQLite | `sqlite/` | Planned for v0.1 |
+| SQLite | [`sqlite/`](sqlite) | In development for v0.1 |
 | PostgreSQL | `postgres/` | Planned for v0.2 |
 | MySQL and MariaDB | `mysql/` | Planned for v0.3 |
 | SQL Server | `sqlserver/` | Planned for v1.1 |

@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- SQLite adapter: reads a SQLite database through a read-only connection and a consistent snapshot, and writes a copy into a new file that replaces the target only when it is complete. Not yet available from the command line.
+
+### Changed
+
+- Adapter SDK: each adapter reports how many key values one read can carry (`Capabilities.MaxKeyValues`), and stuntdb sends longer key lists in batches. Adapters no longer split a read, so its order and limit always hold.
+
 ## [0.0.1] - 2026-10-20
 
 The first pre-release: the project's foundations. It doesn't copy databases yet.
