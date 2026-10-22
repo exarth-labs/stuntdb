@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/exarth-labs/stuntdb/main/schemas/stuntdb.schema.json",
+  "title": "stuntdb configuration",
+  "description": "stuntdb.yaml: which database to copy, where the copy goes, and how every column is masked.",
+  "type": "object",
+  "required": ["version"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "description": "The URL of this schema, for editors that read it from the file.",
+      "type": "string"
+    },
+    "version": {
+      "description": "The configuration format version. Always 1 for now.",
+      "const": 1
+    },
+    "source": {
+      "description": "The database to copy. stuntdb only ever reads it.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "url": {
+          "description": "The source database URL, such as sqlite:./app.db. Never write a password here: use an environment variable, as in ${STUNTDB_SOURCE_URL}.",
+          "type": "string",
+          "minLength": 1
+        },
+        "max_connections": {
+          "description": "The most connections stuntdb opens to the source.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 64
+        },
+        "statement_timeout": {
+          "description": "The longest one query on the source may run, such as 30s or 5m.",
+          "$ref": "#/$defs/duration"
+        }
+      }
+    },
+    "output": {
+      "description": "Where the masked copy goes.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "to": {
+          "description": "The database URL to load the copy into, such as sqlite:./dev.db. The flag --to overrides it.",
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "masking": {
+      "description": "How values are masked.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "description": "The secret masking key: at least 32 characters, from your secret store. Never write it here: use an environment variable, as in ${STUNTDB_MASKING_KEY}, or key_file.",
+          "type": "string"
+        },
+        "key_file": {
+          "description": "A file that holds the masking key, relative to this file.",
+          "type": "string",
+          "minLength": 1
+        },
+        "unclassified": {
+          "description": "What happens to a column that no rule covers. fail (the default) stops the run until someone reviews it; null and keep exist for experiments only.",
+          "enum": ["fail", "null", "keep"]
+        }
+      },
+      "not": {
+        "description": "Use key or key_file, not both.",
+        "required": ["key", "key_file"]
+      }
+    },
+    "columns": {
+      "description": "Masking rules: a table (\"namespace.table\", or just \"table\"), then its columns. A rule is a transformer name, such as keep or email, or an object with use: and the transformer's options.",
+      "type": "object",
+      "propertyNames": { "minLength": 1 },
+      "additionalProperties": {
+        "type": "object",
+        "propertyNames": { "minLength": 1 },
+        "additionalProperties": { "$ref": "#/$defs/rule" }
+      }
+    }
+  },
+  "$defs": {
+    "duration": {
+      "description": "A duration, such as 500ms, 30s, 5m or 1h30m.",
+      "type": "string",
+      "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h))+$"
+    },
+    "transformer": {
+      "description": "A transformer name: keep, null, or one from stuntdb transformers.",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$"
+    },
+    "rule": {
+      "description": "How one column is masked.",
+      "oneOf": [
+        { "$ref": "#/$defs/transformer" },
+        {
+          "type": "object",
+          "required": ["use"],
+          "properties": {
+            "use": { "$ref": "#/$defs/transformer" },
+            "domain": {
+              "description": "Columns in the same domain map equal values to equal fake values, so that joins between them still work. The default is namespace.table.column.",
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_.-]+$"
+            }
+          }
+        }
+      ]
+    }
+  }
+}
