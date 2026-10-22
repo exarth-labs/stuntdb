@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/exarth-labs/stuntdb/internal/buildinfo"
 	"github.com/exarth-labs/stuntdb/internal/errs"
+	"github.com/exarth-labs/stuntdb/internal/redact"
 )
 
 func TestExecute(t *testing.T) {
@@ -52,6 +54,42 @@ func TestExecute(t *testing.T) {
 				t.Errorf("stderr = %q, want it to contain %q", stderr.String(), tt.wantStderr)
 			}
 		})
+	}
+}
+
+// Errors are redacted on their way to the screen, keep their kind, and the
+// usage hint (our own text) is printed as it is.
+func TestReportErrorRedacts(t *testing.T) {
+	const canary = "canary-7f3a"
+	redactor := redact.New()
+	redactor.AddURL("postgres://admin:" + canary + "@db.internal/app")
+	tests := []struct {
+		name string
+		err  error
+		kind errs.Kind
+	}{
+		{"a row value", errs.E(errs.Integrity, errors.New("Duplicate entry '"+canary+"' for key 'email'")), errs.Integrity},
+		{"a connection URL", errs.E(errs.Connect, errors.New("cannot reach postgres://admin:"+canary+"@db.internal/app")), errs.Connect},
+		{"a password on its own", errs.E(errs.Connect, errors.New("password "+canary+" rejected")), errs.Connect},
+		{"an error without a kind", errors.New("bad flag value '" + canary + "'"), errs.Usage},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stderr bytes.Buffer
+			err := reportError(&stderr, redactor, tt.err)
+			if strings.Contains(stderr.String(), canary) || strings.Contains(err.Error(), canary) {
+				t.Errorf("the canary came through: %q", stderr.String())
+			}
+			if errs.KindOf(err) != tt.kind {
+				t.Errorf("kind = %v, want %v", errs.KindOf(err), tt.kind)
+			}
+		})
+	}
+
+	var stderr bytes.Buffer
+	_ = reportError(&stderr, redactor, errs.E(errs.Usage, errors.New("bad")))
+	if !strings.Contains(stderr.String(), "Run 'stuntdb --help' for usage.") {
+		t.Errorf("the usage hint was changed: %q", stderr.String())
 	}
 }
 
