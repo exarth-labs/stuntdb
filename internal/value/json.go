@@ -3,7 +3,6 @@ package value
 import (
 	"bytes"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -77,15 +76,7 @@ func appendNatural(dst []byte, elem *Type, v Value) ([]byte, error) {
 	case KindBytes:
 		return appendString(dst, base64.StdEncoding.EncodeToString([]byte(v.str))), nil
 	case KindUUID:
-		u := v.UUID()
-		var buf [36]byte
-		hex.Encode(buf[0:8], u[0:4])
-		hex.Encode(buf[9:13], u[4:6])
-		hex.Encode(buf[14:18], u[6:8])
-		hex.Encode(buf[19:23], u[8:10])
-		hex.Encode(buf[24:36], u[10:16])
-		buf[8], buf[13], buf[18], buf[23] = '-', '-', '-', '-'
-		return appendString(dst, string(buf[:])), nil
+		return appendString(dst, FormatUUID(v.UUID())), nil
 	case KindDate:
 		if v.special != Normal {
 			return appendSpecial(dst, v), nil
@@ -95,17 +86,14 @@ func appendNatural(dst []byte, elem *Type, v Value) ([]byte, error) {
 		return append(dst, '"'), nil
 	case KindTime:
 		dst = append(dst, '"')
-		dst = appendClock(dst, int64(v.num))
-		if v.hasZone {
-			dst = appendZone(dst, int(v.zone))
-		}
+		dst = appendTimeOfDay(dst, v)
 		return append(dst, '"'), nil
 	case KindTimestamp:
 		if v.special != Normal {
 			return appendSpecial(dst, v), nil
 		}
 		dst = append(dst, '"')
-		dst = appendTimestamp(dst, v)
+		dst = appendTimestamp(dst, v, 'T')
 		return append(dst, '"'), nil
 	case KindInterval:
 		dst = append(dst, `{"months":`...)
@@ -251,7 +239,7 @@ func decodeNatural(k Kind, t *Type, data []byte) (Value, error) {
 		}
 	case KindTimestamp:
 		if s, ok := jsonString(data); ok {
-			return parseTimestamp(s)
+			return parseTimestamp(s, 'T')
 		}
 	case KindInterval:
 		var iv struct {
