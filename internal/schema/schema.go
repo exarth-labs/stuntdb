@@ -24,6 +24,15 @@ type TableRef struct {
 // printing them is safe.
 func (r TableRef) String() string { return string(r.Namespace) + "." + string(r.Name) }
 
+// ColumnRef names a column within a database.
+type ColumnRef struct {
+	Table  TableRef
+	Column Ident
+}
+
+// String returns "namespace.table.column".
+func (r ColumnRef) String() string { return r.Table.String() + "." + string(r.Column) }
+
 // Database is the structure of one database.
 type Database struct {
 	Engine     string // the adapter that produced it, e.g. "sqlite"

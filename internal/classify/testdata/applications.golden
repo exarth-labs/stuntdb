@@ -1,0 +1,110 @@
+COLUMN                                     CLASS         SUGGESTION             CONFIDENCE  SOURCE
+main.Employee.EmployeeId                   safe          keep                   0.95        rule core.surrogate_key
+main.Employee.LastName                     direct        last_name              0.90        rule core.last_name
+main.Employee.FirstName                    direct        first_name             0.90        rule core.first_name
+main.Employee.Title                        unclassified  -                      -           -
+main.Employee.ReportsTo                    safe          keep                   0.95        rule core.surrogate_key, references main.Employee.EmployeeId
+main.Employee.BirthDate                    quasi         date_shift             0.90        rule core.birth_date
+main.Employee.HireDate                     unclassified  -                      -           -
+main.Employee.Address                      direct        address part=street    0.85        rule core.street_address
+main.Employee.City                         quasi         address part=city      0.80        rule core.city
+main.Employee.State                        quasi         address part=state     0.60        rule core.state
+main.Employee.Country                      quasi         keep                   0.80        rule core.country
+main.Employee.PostalCode                   quasi         address part=postcode  0.85        rule core.postcode
+main.Employee.Phone                        direct        phone                  0.90        rule core.phone
+main.Employee.Fax                          direct        phone                  0.90        rule core.phone
+main.Employee.Email                        direct        email                  0.95        rule core.email
+main.Customer.CustomerId                   safe          keep                   0.95        rule core.surrogate_key
+main.Customer.FirstName                    direct        first_name             0.90        rule core.first_name
+main.Customer.LastName                     direct        last_name              0.90        rule core.last_name
+main.Customer.Company                      quasi         company                0.70        rule core.company
+main.Customer.Address                      direct        address part=street    0.85        rule core.street_address
+main.Customer.City                         quasi         address part=city      0.80        rule core.city
+main.Customer.State                        quasi         address part=state     0.60        rule core.state
+main.Customer.Country                      quasi         keep                   0.80        rule core.country
+main.Customer.PostalCode                   quasi         address part=postcode  0.85        rule core.postcode
+main.Customer.Phone                        direct        phone                  0.90        rule core.phone
+main.Customer.Fax                          direct        phone                  0.90        rule core.phone
+main.Customer.Email                        direct        email                  0.95        rule core.email
+main.Customer.SupportRepId                 safe          keep                   0.95        rule core.surrogate_key, references main.Employee.EmployeeId
+main.Invoice.InvoiceId                     safe          keep                   0.95        rule core.surrogate_key
+main.Invoice.CustomerId                    safe          keep                   0.95        rule core.surrogate_key, references main.Customer.CustomerId
+main.Invoice.InvoiceDate                   unclassified  -                      -           -
+main.Invoice.BillingAddress                direct        address part=street    0.85        rule core.street_address
+main.Invoice.BillingCity                   quasi         address part=city      0.80        rule core.city
+main.Invoice.BillingState                  quasi         address part=state     0.75        rule core.region
+main.Invoice.BillingCountry                quasi         keep                   0.80        rule core.country
+main.Invoice.BillingPostalCode             quasi         address part=postcode  0.85        rule core.postcode
+main.Invoice.Total                         unclassified  -                      -           -
+main.Artist.ArtistId                       safe          keep                   0.95        rule core.surrogate_key
+main.Artist.Name                           direct        full_name              0.60        rule core.person_name
+main.Genre.GenreId                         safe          keep                   0.95        rule core.surrogate_key
+main.Genre.Name                            unclassified  -                      -           -
+main.Track.TrackId                         safe          keep                   0.95        rule core.surrogate_key
+main.Track.Name                            unclassified  -                      -           -
+main.Track.GenreId                         safe          keep                   0.95        rule core.surrogate_key, references main.Genre.GenreId
+main.Track.Composer                        unclassified  -                      -           -
+main.Track.Milliseconds                    unclassified  -                      -           -
+main.Track.Bytes                           unclassified  -                      -           -
+main.Track.UnitPrice                       unclassified  -                      -           -
+public.users.id                            safe          keep                   0.95        rule core.surrogate_key
+public.users.email                         direct        email                  0.95        rule core.email
+public.users.encrypted_password            secret        password_hash          0.95        rule secrets.password
+public.users.reset_password_token          secret        random_token           0.90        rule secrets.token
+public.users.reset_password_sent_at        unclassified  -                      -           -
+public.users.remember_created_at           safe          keep                   0.90        rule core.record_timestamp
+public.users.confirmation_token            secret        random_token           0.90        rule secrets.token
+public.users.unconfirmed_email             direct        email                  0.95        rule core.email
+public.users.otp_secret                    secret        random_token           0.90        rule secrets.secret
+public.users.otp_backup_codes              secret        random_token           0.90        rule secrets.token
+public.users.sign_in_count                 unclassified  -                      -           -
+public.users.current_sign_in_ip            direct        redact                 0.85        rule core.ip_address
+public.users.last_sign_in_ip               direct        redact                 0.85        rule core.ip_address
+public.users.created_at                    safe          keep                   0.90        rule core.record_timestamp
+public.users.updated_at                    safe          keep                   0.90        rule core.record_timestamp
+public.users.lock_version                  safe          keep                   0.90        rule core.lock_version
+public.api_keys.id                         safe          keep                   0.95        rule core.surrogate_key
+public.api_keys.user_id                    safe          keep                   0.95        rule core.surrogate_key, references public.users.id
+public.api_keys.name                       unclassified  -                      -           -
+public.api_keys.token                      secret        random_token           0.90        rule secrets.token
+public.api_keys.last_used_at               unclassified  -                      -           -
+public.auth_user.id                        safe          keep                   0.95        rule core.surrogate_key
+public.auth_user.password                  secret        password_hash          0.95        rule secrets.password
+public.auth_user.last_login                unclassified  -                      -           -
+public.auth_user.is_superuser              unclassified  -                      -           -
+public.auth_user.username                  direct        username               0.80        rule core.username
+public.auth_user.first_name                direct        first_name             0.90        rule core.first_name
+public.auth_user.last_name                 direct        last_name              0.90        rule core.last_name
+public.auth_user.email                     direct        email                  0.95        rule core.email
+public.auth_user.is_staff                  unclassified  -                      -           -
+public.auth_user.is_active                 unclassified  -                      -           -
+public.auth_user.date_joined               unclassified  -                      -           -
+public.django_session.session_key          secret        random_token           0.85        rule secrets.session
+public.django_session.session_data         secret        random_token           0.85        rule secrets.session
+public.django_session.expire_date          unclassified  -                      -           -
+app.password_reset_tokens.email            direct        email                  0.95        rule core.email
+app.password_reset_tokens.token            secret        random_token           0.90        rule secrets.token
+app.password_reset_tokens.created_at       safe          keep                   0.90        rule core.record_timestamp
+app.personal_access_tokens.id              safe          keep                   0.95        rule core.surrogate_key
+app.personal_access_tokens.tokenable_type  unclassified  -                      -           -
+app.personal_access_tokens.tokenable_id    unclassified  -                      -           -
+app.personal_access_tokens.name            unclassified  -                      -           -
+app.personal_access_tokens.token           secret        random_token           0.90        rule secrets.token
+app.personal_access_tokens.abilities       unclassified  -                      -           -
+app.personal_access_tokens.last_used_at    unclassified  -                      -           -
+app.personal_access_tokens.expires_at      unclassified  -                      -           -
+app.customers.email                        direct        email                  0.95        rule core.email
+app.customers.tax_id                       direct        hash                   0.85        rule core.government_id
+app.customers.phone                        direct        phone                  0.90        rule core.phone
+app.phones.id                              safe          keep                   0.95        rule core.surrogate_key
+app.phones.number                          unclassified  -                      -           -
+app.orders.id                              safe          keep                   0.95        rule core.surrogate_key
+app.orders.customer_email                  direct        email                  0.95        rule core.email, references app.customers.email
+app.orders.state                           unclassified  -                      -           -
+app.orders.notes                           free_text     synthesize_text        0.70        rule core.free_text
+app.orders.created_at                      unclassified  -                      -           -
+app.orders.email_subject                   unclassified  -                      -           -
+app.orders.api_key_name                    unclassified  -                      -           -
+app.orders.token_count                     unclassified  -                      -           -
+app.citizens.ssn                           direct        hash                   0.85        rule core.government_id
+app.citizens.name                          direct        full_name              0.60        rule core.person_name

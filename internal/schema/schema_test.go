@@ -204,6 +204,9 @@ func TestLookups(t *testing.T) {
 	if got := (TableRef{"public", "users"}).String(); got != "public.users" {
 		t.Errorf("TableRef.String() = %q", got)
 	}
+	if got := (ColumnRef{TableRef{"public", "users"}, "team_id"}).String(); got != "public.users.team_id" {
+		t.Errorf("ColumnRef.String() = %q", got)
+	}
 }
 
 func TestIdentityKey(t *testing.T) {
