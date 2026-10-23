@@ -20,7 +20,8 @@ func TestYAMLScalar(t *testing.T) {
 		{"<<", `"<<"`},
 		{"two\nlines", `"two\nlines"`},
 		{"café", "café"},
-		{"bad\xffbyte", `"bad�byte"`},
+		{"bad\xffbyte", "\"bad�byte\""},
+		{"bad\xff\xfe\xfdbytes", "\"bad�bytes\""}, // one replacement per run of invalid bytes
 	}
 	for _, tt := range tests {
 		if got := yamlScalar(tt.in); got != tt.want {
