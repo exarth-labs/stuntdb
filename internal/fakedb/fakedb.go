@@ -56,6 +56,22 @@ type store struct {
 // New returns a fake engine with an empty store.
 func New() *Dialect { return &Dialect{databases: make(map[string]*store)} }
 
+// Create stores the structure of a database, without rows, under name, so
+// that "fake:<name>" opens it. It replaces any database of that name.
+func (d *Dialect) Create(name string, db *schema.Database) {
+	c := &schema.Database{Engine: "fake", Version: "1.0"}
+	for _, ns := range db.Namespaces {
+		copied := &schema.Namespace{Name: ns.Name}
+		for _, t := range ns.Tables {
+			copied.Tables = append(copied.Tables, cloneTable(t))
+		}
+		c.Namespaces = append(c.Namespaces, copied)
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.databases[name] = &store{db: c, rows: map[schema.TableRef][][]value.Value{}}
+}
+
 // Statements returns the number of read statements run so far.
 func (d *Dialect) Statements() int64 { return d.statements.Load() }
 

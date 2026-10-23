@@ -136,6 +136,10 @@ type LoadOptions struct {
 	// Path is the project configuration file. Empty means DefaultPath.
 	Path string
 
+	// NoProject skips the project configuration file, for "stuntdb init",
+	// which creates it. Settings then come from the other layers only.
+	NoProject bool
+
 	// UserPath is the user's own defaults. Empty means config.yaml in
 	// stuntdb's folder of the user's configuration folder; "-" means none.
 	UserPath string
@@ -210,13 +214,15 @@ func load(opts LoadOptions) (*Config, error) {
 			f.collect(values)
 		}
 	}
-	f, err := readFile(path, true)
-	if err != nil {
-		return nil, err
-	}
-	f.collect(values)
-	if cfg.Columns, err = f.columns(); err != nil {
-		return nil, err
+	if !opts.NoProject {
+		f, err := readFile(path, true)
+		if err != nil {
+			return nil, err
+		}
+		f.collect(values)
+		if cfg.Columns, err = f.columns(); err != nil {
+			return nil, err
+		}
 	}
 
 	for _, s := range settings {

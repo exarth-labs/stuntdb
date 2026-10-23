@@ -88,6 +88,32 @@ func TestLockRoundTrip(t *testing.T) {
 	}
 }
 
+// Names that YAML must quote, or write in its long-key form, read back
+// unchanged.
+func TestLockAwkwardNames(t *testing.T) {
+	names := []string{"<<", "a: b", "null", "#x", "it's", "- x", strings.Repeat("x", 2000)}
+	lock := &Lock{GeneratedBy: "stuntdb test", GeneratorVersion: 1, SchemaFingerprint: "sha256:00"}
+	table := &LockTable{Table: TableName{Namespace: "<<", Name: strings.Repeat("t", 2000)}}
+	for _, name := range names {
+		table.Columns = append(table.Columns, &LockColumn{Column: name, Decision: "keep", Source: "config"})
+	}
+	lock.Tables = []*LockTable{table}
+
+	path := filepath.Join(t.TempDir(), LockPath)
+	if err := lock.Write(context.Background(), path); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	got, err := ReadLock(path)
+	if err != nil {
+		t.Fatalf("ReadLock: %v", err)
+	}
+	for _, name := range names {
+		if c := got.Column(table.Table, name); c == nil || c.Decision != "keep" {
+			t.Errorf("column %.20q = %+v", name, c)
+		}
+	}
+}
+
 func TestReadLockErrors(t *testing.T) {
 	if _, err := ReadLock(filepath.Join(t.TempDir(), LockPath)); !errors.Is(err, ErrNoLock) {
 		t.Errorf("a missing lockfile = %v, want ErrNoLock", err)

@@ -161,9 +161,20 @@ func New(packs ...rules.Pack) (*Classifier, error) {
 	return c, nil
 }
 
+// Must returns c, and panics if err is not nil, as in
+// Must(New(packs...)). It is for packs that are part of the program, where
+// a mistake is a bug, like text/template's Must.
+func Must(c *Classifier, err error) *Classifier {
+	if err != nil {
+		panic(err)
+	}
+	return c
+}
+
 // Default returns a classifier that uses the packs built into stuntdb.
-func Default() (*Classifier, error) {
-	return New(rules.Builtin()...)
+// They are part of the binary, and its tests check them.
+func Default() *Classifier {
+	return Must(New(rules.Builtin()...))
 }
 
 // Database classifies every column of db.

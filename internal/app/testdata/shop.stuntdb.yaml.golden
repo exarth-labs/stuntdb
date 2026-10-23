@@ -1,0 +1,44 @@
+# stuntdb configuration, written by "stuntdb init". Editors with YAML
+# support check it, and complete settings, with the schema below.
+# yaml-language-server: $schema=https://raw.githubusercontent.com/exarth-labs/stuntdb/main/schemas/stuntdb.schema.json
+#
+# Next steps:
+#   1. Review the masking rules under "columns".
+#   2. Run "stuntdb check --update" to write stuntdb.lock.
+#   3. Commit both files, and run "stuntdb check" in CI.
+
+version: 1
+
+source:
+  url: fake:shop
+
+# Where "stuntdb run" writes the masked copy. The flag --to overrides it.
+# output:
+#   to: sqlite:./dev.db
+
+masking:
+  # The masking key: 32 or more random characters from your secret store,
+  # such as the output of "openssl rand -base64 32". Only "stuntdb run"
+  # needs it.
+  key: ${STUNTDB_MASKING_KEY}
+  # A column without a rule stops stuntdb until someone reviews it.
+  unclassified: fail
+
+# Masking rules, by table and column. stuntdb suggested each rule below
+# from the column's name and type, and uses none of them until you accept
+# it: review each line, change it if needed, and remove the "# " in front
+# of it. Write keep to copy a column as it is, or null to empty it.
+#
+# Columns that are not listed need no rule: keys the database assigns,
+# record timestamps and other safe columns are kept, foreign keys are
+# masked like the columns they reference, and generated columns are
+# computed again.
+columns:
+  APP.CUSTOMERS:
+    # EMAIL: email             # direct, rule core.email (0.95)
+    # FIRST_NAME: first_name   # direct, rule core.first_name (0.90)
+    # API_TOKEN: random_token  # secret, rule secrets.token (0.90); secrets are always replaced
+    # NOTES: synthesize_text   # free_text, rule core.free_text (0.70)
+    # TIER:                    # no suggestion: write keep, null or a transformer
+  APP.ORDERS:
+    # TOTAL:  # no suggestion: write keep, null or a transformer

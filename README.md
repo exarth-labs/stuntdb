@@ -2,7 +2,7 @@
 
 **A stunt double for your database.** stuntdb makes a small, safe copy of a production database. It replaces personal data with realistic fake values and keeps every relationship between tables intact, so developers and AI agents can work with data that looks and behaves like the real thing.
 
-> **Status: early development.** stuntdb can't copy a database from the command line yet. The SQLite support it needs is being built now.
+> **Status: early development.** stuntdb can't copy a database from the command line yet. The SQLite support it needs is being built now. It can already review a SQLite database's columns: `stuntdb init` suggests a masking rule for each one, and `stuntdb check` makes sure none is left undecided.
 >
 > - The first release with real functionality will support **SQLite**.
 > - **PostgreSQL**, **MySQL / MariaDB**, **SQL Server** and **Oracle** will follow, one per release.

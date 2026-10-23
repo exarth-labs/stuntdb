@@ -17,7 +17,7 @@ var plannedTransformers = []string{
 
 func builtinRules(t *testing.T) []*rule {
 	t.Helper()
-	c, err := Default()
+	c, err := New(rules.Builtin()...)
 	if err != nil {
 		t.Fatalf("the built-in packs do not load: %v", err)
 	}
@@ -124,6 +124,19 @@ func TestPackMistakes(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestMust(t *testing.T) {
+	c := Default()
+	if Must(c, nil) != c {
+		t.Error("Must(c, nil) must return c")
+	}
+	defer func() {
+		if recover() == nil {
+			t.Error("Must of a broken pack must panic")
+		}
+	}()
+	Must(New(rules.Pack{Name: "broken", Data: []byte("version: 2\npack: broken\n")}))
 }
 
 func TestNewRefusesAPackTwice(t *testing.T) {

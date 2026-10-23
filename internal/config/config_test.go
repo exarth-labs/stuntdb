@@ -202,6 +202,37 @@ func TestMissingProjectConfig(t *testing.T) {
 	}
 }
 
+// NoProject reads every layer but the project file, which need not exist.
+func TestNoProject(t *testing.T) {
+	path := filepath.Join(t.TempDir(), DefaultPath)
+	cfg, err := Load(LoadOptions{Path: path, NoProject: true, UserPath: "-", LookupEnv: env{"STUNTDB_SOURCE_URL": "sqlite:app.db"}.lookup})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if url, err := cfg.Source.URL.Get(); err != nil || url != "sqlite:app.db" {
+		t.Errorf("source.url = %q, %v", url, err)
+	}
+	if cfg.Path != path || cfg.Columns != nil {
+		t.Errorf("Path = %q, Columns = %v", cfg.Path, cfg.Columns)
+	}
+}
+
+// A table may have no rules yet: "stuntdb init" writes every suggestion
+// commented out. A table must still be a set of columns.
+func TestTableWithoutRules(t *testing.T) {
+	cfg, err := loadTest(t, write(t, "version: 1\ncolumns:\n  main.users:\n    # email: email\n  main.orders:\n    note: keep\n"), nil, nil)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.Columns) != 2 || len(cfg.Columns[0].Columns) != 0 || len(cfg.Columns[1].Columns) != 1 {
+		t.Errorf("Columns = %+v", cfg.Columns)
+	}
+	_, err = loadTest(t, write(t, "version: 1\ncolumns:\n  main.users: keep\n"), nil, nil)
+	if err == nil || !strings.Contains(err.Error(), `:3:15: columns["main.users"] must be empty or a set of settings (key: value)`) {
+		t.Errorf("a table given a transformer = %v, want an error at its position", err)
+	}
+}
+
 func TestNullAndEmptyValues(t *testing.T) {
 	cfg, err := loadTest(t, write(t, "version: 1\nmasking:\n  unclassified: null\n"), nil, nil)
 	if err != nil || cfg.Masking.Unclassified != PolicyNull {

@@ -2,6 +2,8 @@ package outfile
 
 import (
 	"context"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -36,6 +38,41 @@ func TestCommit(t *testing.T) {
 				t.Errorf("the partial file still exists: %v", err)
 			}
 		})
+	}
+}
+
+func TestCommitNew(t *testing.T) {
+	dir := t.TempDir()
+	final := filepath.Join(dir, "stuntdb.yaml")
+	partial := filepath.Join(dir, ".stuntdb.yaml.partial-1")
+	writeFile(t, partial, "new")
+	if err := CommitNew(context.Background(), partial, final); err != nil {
+		t.Fatalf("CommitNew: %v", err)
+	}
+	if got := readFile(t, final); got != "new" {
+		t.Errorf("final file holds %q, want %q", got, "new")
+	}
+	if _, err := os.Stat(partial); !os.IsNotExist(err) {
+		t.Errorf("the partial file still exists: %v", err)
+	}
+
+	// A second file never replaces the first.
+	writeFile(t, partial, "newer")
+	err := CommitNew(context.Background(), partial, final)
+	if !errors.Is(err, fs.ErrExist) {
+		t.Fatalf("CommitNew over an existing file = %v, want fs.ErrExist", err)
+	}
+	if strings.Contains(err.Error(), dir) {
+		t.Errorf("the error contains the path: %q", err)
+	}
+	if got := readFile(t, final); got != "new" {
+		t.Errorf("the existing file was replaced: it holds %q", got)
+	}
+	if got := readFile(t, partial); got != "newer" {
+		t.Errorf("the partial file holds %q; the caller removes it", got)
+	}
+	if err := CommitNew(context.Background(), partial, filepath.Join(dir, "sub", "x")); err == nil {
+		t.Error("CommitNew into another folder succeeded")
 	}
 }
 

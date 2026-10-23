@@ -8,6 +8,10 @@ import (
 	_ "embed"
 )
 
+// ConfigURL is where the schema of stuntdb.yaml is published: its $id.
+// Files that stuntdb writes point editors at it.
+const ConfigURL = "https://raw.githubusercontent.com/exarth-labs/stuntdb/main/schemas/stuntdb.schema.json"
+
 //go:embed stuntdb.schema.json
 var config []byte
 
