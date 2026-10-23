@@ -170,3 +170,25 @@ func TestLoaderRejectsMisuse(t *testing.T) {
 		t.Error("a non-fake URL should fail to open")
 	}
 }
+
+func TestCreate(t *testing.T) {
+	d := New()
+	db := &schema.Database{Namespaces: []*schema.Namespace{{Name: "APP", Tables: []*schema.Table{{
+		Name:    "PEOPLE",
+		Columns: []*schema.Column{{Name: "ID", Type: intType}},
+	}}}}}
+	d.Create("shop", db)
+	db.Namespaces[0].Tables[0].Columns[0].Name = "CHANGED" // Create keeps its own copy
+
+	conn, err := d.Open(context.Background(), "fake:shop", dialect.OpenOptions{Role: dialect.Source})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := conn.Introspect(context.Background(), dialect.Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tbl := got.Table(people); tbl == nil || tbl.Column("ID") == nil || tbl.EstimatedRows != 0 {
+		t.Errorf("Introspect after Create = %+v", got)
+	}
+}

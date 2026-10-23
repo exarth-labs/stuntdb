@@ -78,7 +78,8 @@
       "type": "object",
       "propertyNames": { "minLength": 1 },
       "additionalProperties": {
-        "type": "object",
+        "description": "A table's columns and their rules. A table may have no rules yet, as \"stuntdb init\" writes it, with every suggestion commented out.",
+        "type": ["object", "null"],
         "propertyNames": { "minLength": 1 },
         "additionalProperties": { "$ref": "#/$defs/rule" }
       }

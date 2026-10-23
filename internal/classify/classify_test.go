@@ -20,15 +20,6 @@ import (
 
 var update = flag.Bool("update", false, "rewrite the golden files in testdata")
 
-func defaultClassifier(t *testing.T) *Classifier {
-	t.Helper()
-	c, err := Default()
-	if err != nil {
-		t.Fatal(err)
-	}
-	return c
-}
-
 // typeOf returns a column type by its kind's name.
 func typeOf(t testing.TB, kind string) value.Type {
 	t.Helper()
@@ -171,7 +162,7 @@ func TestColumnNames(t *testing.T) {
 		{"tracks", "composer", "string", ""},
 		{"", "", "string", ""},
 	}
-	c := defaultClassifier(t)
+	c := Default()
 	for _, tt := range tests {
 		col := &schema.Column{Name: schema.Ident(tt.column), Type: typeOf(t, tt.kind)}
 		m := c.column(trimNumbers(words(tt.table)), col)
@@ -256,7 +247,7 @@ table main.a
 table main.b
   id  string pk ->main.a.id
 `)
-	got := defaultClassifier(t).Database(db)
+	got := Default().Database(db)
 	tests := []struct {
 		column      schema.ColumnRef
 		rule        string
@@ -309,7 +300,7 @@ func TestCompositeReferences(t *testing.T) {
 			}}},
 		},
 	}}}
-	got := defaultClassifier(t).Database(db)
+	got := Default().Database(db)
 	if m := got[ref("main.logins", "account_ref")]; m.Rule != "core.email" || m.Via == nil || *m.Via != ref("main.accounts", "email") {
 		t.Errorf("account_ref = %+v, want the email it references, by position", m)
 	}
@@ -325,12 +316,12 @@ table main.users
 table main.orders
   city  string ->main.users.city
 `)
-	got := defaultClassifier(t).Database(db)
+	got := Default().Database(db)
 	got[ref("main.users", "city")].Options["part"] = "changed"
 	if part := got[ref("main.orders", "city")].Options["part"]; part != "city" {
 		t.Errorf("changing one match's options changed another's: part = %q", part)
 	}
-	again := defaultClassifier(t).Database(db)
+	again := Default().Database(db)
 	if part := again[ref("main.users", "city")].Options["part"]; part != "city" {
 		t.Errorf("changing a match's options changed the rule: part = %q", part)
 	}
@@ -413,7 +404,7 @@ func TestGolden(t *testing.T) {
 	if err := db.Validate(); err != nil {
 		t.Fatalf("the test schema is not valid: %v", err)
 	}
-	got := report(db, defaultClassifier(t).Database(db))
+	got := report(db, Default().Database(db))
 
 	golden := filepath.Join("testdata", "applications.golden")
 	if *update {

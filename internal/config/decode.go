@@ -362,6 +362,8 @@ func typeList(want []string) string {
 			words[i] = "a number"
 		case "boolean":
 			words[i] = "true or false"
+		case "null":
+			words[i] = "empty"
 		default:
 			words[i] = "a " + w
 		}
