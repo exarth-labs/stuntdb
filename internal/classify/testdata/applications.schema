@@ -1,0 +1,149 @@
+# Schemas of real applications, written in the format of parseSchema in
+# classify_test.go. Their classification is in applications.golden.
+
+# Chinook, the anchor fixture: its people, invoices and tracks, with the
+# types the SQLite adapter gives them. INTEGER PRIMARY KEY is an identity.
+table main.Employee
+  EmployeeId    int pk identity
+  LastName      string
+  FirstName     string
+  Title         string
+  ReportsTo     int ->main.Employee.EmployeeId
+  BirthDate     timestamp
+  HireDate      timestamp
+  Address       string
+  City          string
+  State         string
+  Country       string
+  PostalCode    string
+  Phone         string
+  Fax           string
+  Email         string
+
+table main.Customer
+  CustomerId    int pk identity
+  FirstName     string
+  LastName      string
+  Company       string
+  Address       string
+  City          string
+  State         string
+  Country       string
+  PostalCode    string
+  Phone         string
+  Fax           string
+  Email         string
+  SupportRepId  int ->main.Employee.EmployeeId
+
+table main.Invoice
+  InvoiceId          int pk identity
+  CustomerId         int ->main.Customer.CustomerId
+  InvoiceDate        timestamp
+  BillingAddress     string
+  BillingCity        string
+  BillingState       string
+  BillingCountry     string
+  BillingPostalCode  string
+  Total              decimal
+
+table main.Artist
+  ArtistId  int pk identity
+  Name      string
+
+table main.Genre
+  GenreId  int pk identity
+  Name     string
+
+table main.Track
+  TrackId       int pk identity
+  Name          string
+  GenreId       int ->main.Genre.GenreId
+  Composer      string
+  Milliseconds  int
+  Bytes         int
+  UnitPrice     decimal
+
+# Ruby on Rails with Devise, on PostgreSQL (inet is an engine-specific type).
+table public.users
+  id                      int pk identity
+  email                   string
+  encrypted_password      string
+  reset_password_token    string
+  reset_password_sent_at  timestamp
+  remember_created_at     timestamp
+  confirmation_token      string
+  unconfirmed_email       string
+  otp_secret              string
+  otp_backup_codes        text
+  sign_in_count           int
+  current_sign_in_ip      opaque
+  last_sign_in_ip         opaque
+  created_at              timestamp
+  updated_at              timestamp
+  lock_version            int
+
+table public.api_keys
+  id            uuid pk uuid
+  user_id       int ->public.users.id
+  name          string
+  token         string
+  last_used_at  timestamp
+
+# Django's built-in tables.
+table public.auth_user
+  id            int pk identity
+  password      string
+  last_login    timestamp
+  is_superuser  bool
+  username      string
+  first_name    string
+  last_name     string
+  email         string
+  is_staff      bool
+  is_active     bool
+  date_joined   timestamp
+
+table public.django_session
+  session_key   string pk
+  session_data  text
+  expire_date   timestamp
+
+# Laravel's built-in tables.
+table app.password_reset_tokens
+  email       string pk
+  token       string
+  created_at  timestamp
+
+table app.personal_access_tokens
+  id              int pk identity
+  tokenable_type  string
+  tokenable_id    int
+  name            string
+  token           string
+  abilities       text
+  last_used_at    timestamp
+  expires_at      timestamp
+
+# Shapes that must be neither mistaken for personal data nor kept unseen.
+table app.customers
+  email   string pk           # a natural key: masked, and so are its references
+  tax_id  int
+  phone   int ->app.phones.id # named like a phone: reviewed, though it references a key
+
+table app.phones
+  id      int pk identity
+  number  string
+
+table app.orders
+  id              uuid pk uuid
+  customer_email  string ->app.customers.email
+  state           string
+  notes           text
+  created_at      text        # SQLite text, not known to be a timestamp
+  email_subject   string
+  api_key_name    string
+  token_count     int
+
+table app.citizens
+  ssn   int pk identity       # numbered by the database, but named like a national ID
+  name  string

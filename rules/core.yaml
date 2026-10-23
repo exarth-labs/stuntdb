@@ -1,0 +1,644 @@
+# The core rule pack: personal data, and the few kinds of columns that are
+# safe to copy without review.
+#
+# Each rule suggests what a column holds from its name and type alone; no
+# rule ever reads data. A human confirms every suggestion, except for rules
+# of class safe, whose "keep" is recorded in stuntdb.lock for review.
+#
+# A rule has:
+#   id          a short name; the rule is known as core.<id>
+#   class       direct | quasi | sensitive | secret | free_text | safe
+#   use         the suggested transformer. Safe rules always use keep, and
+#               secret rules never do.
+#   options     the transformer's options, if any
+#   confidence  how likely a match is right, from 0 to 1
+#   types       the column types it applies to: bool, int, float, decimal,
+#               string, text, binary, date, time, timestamp, interval,
+#               uuid, json, enum, array or opaque
+#   names       column names, as lowercase words. A name matches the end of
+#               a column name: "email" matches email, customer_email and
+#               CustomerEmail, but not email_subject. Plurals and trailing
+#               numbers match too (emails, address_2). Accents are ignored,
+#               so write "prenom" for prénom.
+#   tables      optional: the table's name must contain one of these words
+#   identity    optional: true if the database assigns the column's values
+#               itself (an identity or auto-increment column, or a UUID
+#               default)
+#
+# When several rules match, personal-data rules win over safe ones, then the
+# longest name wins (email_address is an email, not an address).
+
+version: 1
+pack: core
+
+rules:
+  # Direct identifiers: each one identifies a person on its own.
+
+  - id: email
+    class: direct
+    use: email
+    confidence: 0.95
+    types: [string, text]
+    names:
+      - email
+      - e mail
+      - emailaddress
+      - email address
+      - mail
+      - mail address
+      - correo
+      - correo electronico
+      - courriel
+
+  - id: phone
+    class: direct
+    use: phone
+    confidence: 0.9
+    types: [string, text, int, decimal]
+    names:
+      - phone
+      - phonenumber
+      - phone number
+      - phone no
+      - telephone
+      - tel
+      - mobile
+      - mobile number
+      - cell
+      - cellphone
+      - fax
+      - msisdn
+      - telefono
+      - telefone
+      - telefon
+
+  - id: first_name
+    class: direct
+    use: first_name
+    confidence: 0.9
+    types: [string, text]
+    names:
+      - first name
+      - firstname
+      - fname
+      - given name
+      - givenname
+      - forename
+      - name first
+      - middle name
+      - middlename
+      - nombre
+      - prenom
+      - vorname
+
+  - id: last_name
+    class: direct
+    use: last_name
+    confidence: 0.9
+    types: [string, text]
+    names:
+      - last name
+      - lastname
+      - lname
+      - surname
+      - family name
+      - familyname
+      - name last
+      - apellido
+      - nom de famille
+      - nachname
+      - sobrenome
+
+  - id: full_name
+    class: direct
+    use: full_name
+    confidence: 0.85
+    types: [string, text]
+    names:
+      - full name
+      - fullname
+      - display name
+      - displayname
+      - legal name
+      - contact name
+      - customer name
+      - employee name
+      - person name
+      - patient name
+      - cardholder name
+      - holder name
+      - recipient name
+      - sender name
+      - nombre completo
+      - nom complet
+
+  # A bare "name" is a person's name only in a table of people.
+  - id: person_name
+    class: direct
+    use: full_name
+    confidence: 0.6
+    types: [string, text]
+    names: [name]
+    tables:
+      - user
+      - customer
+      - client
+      - employee
+      - staff
+      - person
+      - people
+      - contact
+      - member
+      - patient
+      - student
+      - teacher
+      - author
+      - artist
+      - owner
+      - subscriber
+      - applicant
+      - candidate
+      - guest
+      - passenger
+      - traveler
+      - attendee
+      - participant
+      - volunteer
+      - donor
+      - driver
+      - profile
+      - recipient
+      - citizen
+
+  - id: username
+    class: direct
+    use: username
+    confidence: 0.8
+    types: [string, text]
+    names:
+      - username
+      - user name
+      - login
+      - login name
+      - screen name
+      - nickname
+      - nick name
+      - handle
+
+  - id: street_address
+    class: direct
+    use: address
+    options: {part: street}
+    confidence: 0.85
+    types: [string, text]
+    names:
+      - address
+      - addr
+      - address line
+      - street
+      - streetaddress
+      - street address
+      - direccion
+      - adresse
+      - strasse
+      - endereco
+
+  - id: government_id
+    class: direct
+    use: hash
+    confidence: 0.85
+    types: [string, text, int, decimal]
+    names:
+      - ssn
+      - social security number
+      - social security no
+      - sin
+      - social insurance number
+      - national id
+      - national id number
+      - national identity number
+      - national insurance number
+      - ni number
+      - nino
+      - tax id
+      - tax number
+      - taxpayer id
+      - tin
+      - passport
+      - passport number
+      - passport no
+      - driver license
+      - drivers license
+      - driving licence
+      - driving license
+      - license number
+      - licence number
+      - id card number
+      - identity number
+      - cnic
+      - aadhaar
+      - dni
+      - nif
+      - nie
+      - cpf
+      - curp
+      - bsn
+
+  - id: card_number
+    class: direct
+    use: hash
+    confidence: 0.9
+    types: [string, text, int, decimal]
+    names:
+      - card number
+      - cardnumber
+      - card no
+      - card num
+      - credit card
+      - credit card number
+      - creditcard
+      - cc number
+      - ccnum
+
+  - id: bank_account
+    class: direct
+    use: hash
+    confidence: 0.8
+    types: [string, text, int, decimal]
+    names:
+      - iban
+      - account number
+      - account no
+      - bank account
+      - bank account number
+      - routing number
+      - sort code
+      - swift code
+
+  - id: ip_address
+    class: direct
+    use: redact
+    confidence: 0.85
+    types: [string, text, opaque]
+    names:
+      - ip
+      - ip address
+      - ipaddress
+      - ip addr
+      - ipv4
+      - ipv6
+      - remote addr
+      - remote address
+
+  - id: device_id
+    class: direct
+    use: hash
+    confidence: 0.8
+    types: [string, text, uuid]
+    names:
+      - device id
+      - mac address
+      - imei
+      - advertising id
+      - idfa
+      - gaid
+      - udid
+      - android id
+      - device fingerprint
+      - browser fingerprint
+
+  - id: vehicle_id
+    class: direct
+    use: hash
+    confidence: 0.75
+    types: [string, text]
+    names:
+      - license plate
+      - licence plate
+      - number plate
+      - plate number
+      - vin
+      - vehicle identification number
+
+  - id: photo
+    class: direct
+    use: "null"
+    confidence: 0.7
+    types: [binary, opaque]
+    names:
+      - photo
+      - avatar
+      - picture
+      - profile picture
+      - profile image
+      - headshot
+      - selfie
+      - portrait
+      - signature
+      - fingerprint
+
+  # Quasi-identifiers: harmless alone, identifying in combination
+  # (postcode + birth date + gender identifies most people).
+
+  - id: birth_date
+    class: quasi
+    use: date_shift
+    confidence: 0.9
+    types: [date, timestamp, string, text]
+    names:
+      - birth date
+      - birthdate
+      - date of birth
+      - dateofbirth
+      - dob
+      - birthday
+      - born
+      - born on
+      - nacimiento
+      - date naissance
+      - geburtsdatum
+      - data nascimento
+
+  - id: age
+    class: quasi
+    use: noise
+    confidence: 0.7
+    types: [int, decimal]
+    names: [age, edad]
+
+  - id: gender
+    class: quasi
+    use: keep
+    confidence: 0.85
+    types: [string, text, enum, int, decimal]
+    names:
+      - gender
+      - sex
+      - genero
+      - sexo
+      - sexe
+      - geschlecht
+
+  - id: city
+    class: quasi
+    use: address
+    options: {part: city}
+    confidence: 0.8
+    types: [string, text]
+    names:
+      - city
+      - town
+      - ciudad
+      - ville
+      - stadt
+      - cidade
+
+  - id: region
+    class: quasi
+    use: address
+    options: {part: state}
+    confidence: 0.75
+    types: [string, text]
+    names:
+      - province
+      - county
+      - prefecture
+      - billing state
+      - shipping state
+      - mailing state
+      - home state
+      - provincia
+      - bundesland
+
+  # A bare "state" is usually a status; it is a place only in a table of
+  # people or addresses.
+  - id: state
+    class: quasi
+    use: address
+    options: {part: state}
+    confidence: 0.6
+    types: [string, text]
+    names: [state]
+    tables:
+      - address
+      - user
+      - customer
+      - client
+      - employee
+      - staff
+      - person
+      - people
+      - contact
+      - member
+      - patient
+      - student
+
+  - id: postcode
+    class: quasi
+    use: address
+    options: {part: postcode}
+    confidence: 0.85
+    types: [string, text, int, decimal]
+    names:
+      - postcode
+      - post code
+      - postal code
+      - postalcode
+      - zip
+      - zip code
+      - zipcode
+      - plz
+      - postleitzahl
+      - codigo postal
+      - code postal
+      - cep
+
+  - id: country
+    class: quasi
+    use: keep
+    confidence: 0.8
+    types: [string, text, enum]
+    names:
+      - country
+      - country code
+      - pais
+      - pays
+
+  - id: nationality
+    class: quasi
+    use: keep
+    confidence: 0.75
+    types: [string, text, enum]
+    names: [nationality, citizenship]
+
+  - id: marital_status
+    class: quasi
+    use: keep
+    confidence: 0.8
+    types: [string, text, enum, int]
+    names: [marital status, civil status]
+
+  - id: geolocation
+    class: quasi
+    use: noise
+    confidence: 0.8
+    types: [float, decimal, string, text, opaque]
+    names:
+      - latitude
+      - longitude
+      - lat
+      - lng
+      - lon
+      - geolocation
+      - geo location
+      - coordinates
+      - gps
+
+  - id: company
+    class: quasi
+    use: company
+    confidence: 0.7
+    types: [string, text]
+    names:
+      - company
+      - company name
+      - companyname
+      - employer
+      - organization
+      - organisation
+      - empresa
+
+  - id: job_title
+    class: quasi
+    use: keep
+    confidence: 0.7
+    types: [string, text]
+    names: [job title, jobtitle, occupation, profession]
+
+  - id: online_profile
+    class: quasi
+    use: redact
+    confidence: 0.6
+    types: [string, text]
+    names:
+      - website
+      - homepage
+      - personal website
+      - profile url
+      - social profile
+      - linkedin
+      - twitter
+      - facebook
+      - instagram
+
+  # Sensitive data: harmful if disclosed, even without a name next to it.
+
+  - id: salary
+    class: sensitive
+    use: noise
+    confidence: 0.8
+    types: [int, decimal, float]
+    names:
+      - salary
+      - wage
+      - income
+      - annual income
+      - compensation
+      - pay rate
+      - hourly rate
+      - net worth
+      - credit score
+      - salario
+      - gehalt
+
+  - id: health
+    class: sensitive
+    use: synthesize_text
+    confidence: 0.7
+    types: [string, text]
+    names:
+      - diagnosis
+      - diagnoses
+      - medical condition
+      - health condition
+      - medical history
+      - medication
+      - prescription
+      - allergy
+      - allergies
+      - blood type
+      - blood group
+      - disability
+      - symptom
+      - icd code
+      - clinical note
+
+  - id: special_category
+    class: sensitive
+    use: redact
+    confidence: 0.75
+    types: [string, text, enum]
+    names:
+      - religion
+      - ethnicity
+      - ethnic origin
+      - race
+      - sexual orientation
+      - political affiliation
+      - political party
+      - union membership
+      - criminal record
+
+  # Free text: people write anything into it, including personal data.
+
+  - id: free_text
+    class: free_text
+    use: synthesize_text
+    confidence: 0.7
+    types: [string, text]
+    names:
+      - note
+      - comment
+      - bio
+      - biography
+      - about me
+      - message
+      - remark
+      - memo
+      - feedback
+
+  # Safe: copied as they are, without review. Keep this list short; every
+  # rule here is a "keep" that nobody confirms.
+
+  - id: surrogate_key
+    class: safe
+    use: keep
+    confidence: 0.95
+    types: [int, decimal, uuid, string]
+    identity: true
+
+  - id: record_timestamp
+    class: safe
+    use: keep
+    confidence: 0.9
+    types: [timestamp, date, int]
+    names:
+      - created at
+      - created on
+      - updated at
+      - updated on
+      - modified at
+      - modified on
+      - deleted at
+      - inserted at
+      - last modified
+      - last update
+      - date created
+      - date modified
+
+  - id: lock_version
+    class: safe
+    use: keep
+    confidence: 0.9
+    types: [int]
+    names: [lock version, row version]
