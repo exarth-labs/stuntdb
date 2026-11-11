@@ -1,0 +1,17 @@
+# The second word of a company name. Part of generator version 1: any change
+# needs a new GeneratorVersion.
+Analytics
+Consulting
+Designs
+Foods
+Group
+Holdings
+Industries
+Labs
+Logistics
+Media
+Partners
+Systems
+Technologies
+Trading
+Ventures

@@ -1,0 +1,12 @@
+# Street suffixes, as the US Postal Service abbreviates them. Part of
+# generator version 1: any change needs a new GeneratorVersion.
+Ave
+Blvd
+Ct
+Dr
+Ln
+Pl
+Rd
+St
+Ter
+Way

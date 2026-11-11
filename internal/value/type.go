@@ -201,6 +201,11 @@ func (t Type) String() string {
 	}
 }
 
+// NaturalKind returns the kind of value a column of type t normally holds,
+// such as KindString for a JSON column. Engines with dynamic typing, like
+// SQLite, can hold values of other kinds too.
+func (t Type) NaturalKind() Kind { return naturalKind(t) }
+
 // naturalKind is the kind of value a column of type t normally holds.
 func naturalKind(t Type) Kind {
 	switch t.Kind {
