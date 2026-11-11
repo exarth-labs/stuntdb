@@ -1,0 +1,54 @@
+keep [text] "unchanged" -> "unchanged"
+null [text] "gone" -> null
+constant value=12.50 [decimal(12,2)] "99.99" -> "12.50"
+first_name [text] "Jane" -> "Alice"
+first_name [text] "John" -> "Adebayo"
+last_name max_length=6 [string(6)] "Doe" -> "Muller"
+full_name [text] "Jane Doe" -> "Ryan Novak"
+full_name max_length=10 [string(10)] "Jane Doe" -> "Ryan Novak"
+username [text] "jdoe" -> "anna.kowalski94"
+username max_length=40 [string(40) unique] "jdoe" -> "anna.kowalski.8td85wmr5zmyjckma8en"
+email [text] "jane@doe.test" -> "anna.olsen26@example.net"
+email [text] "JANE@DOE.TEST" -> "ivan.brown44@example.com"
+email [text unique] "jane@doe.test" -> "anna.olsen.cgk4b0k4c0x7etqdsrnb@example.net"
+email max_length=40 [string(40) unique] "jane@doe.test" -> "anna.cgk4b0k4c0x7etqdsrnb@example.net"
+company [text] "Acme" -> "Smith Group"
+phone [text] "+1 555 123 4567" -> "+1-863-555-0147"
+phone format=digits [string(10)] "+1 555 123 4567" -> "8635550147"
+phone format=national region=GB [string(12)] "020 7946 0000" -> "07700 900467"
+phone [int64] 5551234567 -> 6025550169
+phone region=GB [int64] 442079460000 -> 447700900302
+address [text] "1 Real Street" -> "6105 Orchard St, Salem, SC 72704"
+address part=street [text] "1 Real Street" -> "6105 Orchard St"
+address part=city [text] "Paris" -> "Kingston"
+address part=state [string(2)] "CA" -> "NJ"
+address part=postcode [text] "75001" -> "16664"
+address part=postcode [int32] 75001 -> 53029
+uuid [uuid] "123e4567-e89b-42d3-a456-426614174000" -> "905645b5-b164-4e1d-8d6a-cd4ce676aee9"
+uuid [text] "123E4567E89B42D3A456426614174000" -> "905645B5B1644E1D8D6ACD4CE676AEE9"
+fpe [text] "ABC-123-xyz" -> "R5r-Svb-s1s"
+fpe alphabet=digits [text] "4111-1111-1111-1111" -> "3142-1512-1614-8750"
+fpe [int64] 1234567 -> 1990371
+fpe [int64] -9876543 -> -7058162
+hash [text] "secret" -> "b412448a5b06b759e9bf7260590fe9fb"
+hash length=8 [text] "secret" -> "b412448a"
+hash [int64] 123456789 -> 404451901
+hash [decimal(20,0)] "12345678901234567890" -> "16023304451364610677"
+hash [uuid] "123e4567-e89b-42d3-a456-426614174000" -> "71415473-c45d-4921-866d-fbc78b74e056"
+random_token [text] "tok_demo_AbC123xyz" -> "bat_ipww_NiC123pak"
+random_token [json] "{\"t\":1}" -> "\"2b3NoPv8jArS0PvphQC3UwjUCUPYPS8l\""
+random_token [binary] bytes "0123456789abcdef" -> bytes "\xeb\xa7\xcebN\xdf!\xff\xa4k0\x05.\x89MH"
+password_hash [text] "$2b$12$real" -> "$2a$10$4IF1izCsGING5OoJjHAnAOL96NR48xKDjtGsq7et0YD776DCEQa/i"
+redact [text] "private" -> "REDACTED"
+redact max_length=5 [string(5)] "private" -> "REDAC"
+redact [json] "{\"a\":1}" -> "\"REDACTED\""
+noise [int64] 1000 -> 908
+noise [int64] -1000 -> -964
+noise percent=50 [decimal(12,2)] "1234.50" -> "1151.54"
+noise [float64] 98.6 -> 100.74947999999999
+date_shift [date] "1990-03-15" -> "1989-03-30"
+date_shift max_days=30 [timestamp(6)] "2026-10-19T13:45:00.5" -> "2026-10-24T13:45:00.5"
+date_shift [timestamp(6) with time zone] "2026-10-19T13:45:00+05:00" -> "2027-06-20T13:45:00+05:00"
+date_shift [text] "1990-03-15" -> "1989-04-29"
+date_shift [text] "2026-10-19 13:45:00" -> "2027-08-11 13:45:00"
+synthesize_text [text] "Call me on my cell, it's urgent!" -> "Cupidatat quis aute commodo occa"
