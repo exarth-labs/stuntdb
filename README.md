@@ -52,6 +52,10 @@ task build            # creates bin/stuntdb (bin/stuntdb.exe on Windows)
 
 See [CONTRIBUTING.md](CONTRIBUTING.md), and please follow our [Code of Conduct](CODE_OF_CONDUCT.md).
 
+## Maintainers
+
+stuntdb is maintained by Ikram Khan and Ubaid Wazir. See [MAINTAINERS.md](MAINTAINERS.md).
+
 ## Security
 
 Please report security problems privately. See [SECURITY.md](SECURITY.md).
