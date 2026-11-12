@@ -714,3 +714,28 @@ func TestUsesDomain(t *testing.T) {
 		t.Error("default leaves the column to the database, whatever the domain")
 	}
 }
+
+func TestOptionScope(t *testing.T) {
+	scope := func(c Column, r Rule) OptionScope { return ColumnRule{c, r}.Scope("max_length") }
+	a, b := col("t", "a", tText), col("u", "b", tText)
+	tests := []struct {
+		name string
+		x, y OptionScope
+		same bool
+	}{
+		{"one domain", scope(a, Rule{Use: "email", Domain: "d"}), scope(b, Rule{Use: "email", Domain: "d"}), true},
+		{"two domains", scope(a, Rule{Use: "email"}), scope(b, Rule{Use: "email"}), false},
+		{"a per group", scope(a, Rule{Use: "first_name", Per: "id"}), scope(col("t", "c", tText), Rule{Use: "first_name", Per: "id"}), true},
+		{"two per keys", scope(a, Rule{Use: "first_name", Domain: "d", Per: "id"}), scope(col("t", "c", tText), Rule{Use: "first_name", Domain: "d", Per: "owner"}), false},
+		{"value and per columns", scope(a, Rule{Use: "first_name", Domain: "d"}), scope(b, Rule{Use: "first_name", Domain: "d", Per: "id"}), false},
+		{"an entity option", scope(a, Rule{Use: "address", Per: "id"}), scope(col("t", "c", tText), Rule{Use: "address", Per: "id"}), false},
+	}
+	for _, tt := range tests {
+		if (tt.x == tt.y) != tt.same {
+			t.Errorf("%s: same scope = %v, want %v", tt.name, tt.x == tt.y, tt.same)
+		}
+	}
+	if scope(a, Rule{Use: "email"}) == (ColumnRule{a, Rule{Use: "email"}}).Scope("length") {
+		t.Error("two options share a scope")
+	}
+}

@@ -34,7 +34,9 @@ func checkMasking(src *source, decisions []*Decision) []Problem {
 		problems = append(problems, Problem{Message: e.Error()})
 	}
 
-	short := map[tooShortKey]*tooShortGroup{}
+	// One value of the option must fit every column of its scope.
+	short := map[mask.OptionScope]*tooShortGroup{}
+	var groups []*tooShortGroup
 	for i, dec := range decs {
 		_, err := mask.Configure(cols[i].Column, rules[i])
 		if err == nil {
@@ -42,28 +44,27 @@ func checkMasking(src *source, decisions []*Decision) []Problem {
 		}
 		var tooShort *mask.TooShortError
 		if errors.As(err, &tooShort) && tooShort.Option != "" {
-			k := tooShortKey{owner: ruleOwner(dec), domain: rules[i].DomainFor(dec.Column), option: tooShort.Option}
-			g := short[k]
+			scope := mask.ColumnRule{Column: cols[i].Column, Rule: rules[i]}.Scope(tooShort.Option)
+			g := short[scope]
 			if g == nil {
-				g = &tooShortGroup{dec: dec, fits: tooShort.Fits, err: err}
-				short[k] = g
+				g = &tooShortGroup{first: dec, err: err, option: tooShort.Option, fits: tooShort.Fits}
+				short[scope] = g
+				groups = append(groups, g)
 			}
-			g.columns = append(g.columns, dec.Column)
-			g.fits = min(g.fits, tooShort.Fits)
+			g.add(dec, tooShort.Fits)
 			continue
 		}
 		problems = append(problems, refusal(dec, byColumn, err))
 	}
 
-	keys := make([]tooShortKey, 0, len(short))
-	for k := range short {
-		keys = append(keys, k)
+	for _, g := range groups {
+		slices.SortFunc(g.owners, func(a, b schema.ColumnRef) int { return cmp.Compare(a.String(), b.String()) })
 	}
-	slices.SortFunc(keys, func(a, b tooShortKey) int {
-		return cmp.Or(cmp.Compare(a.owner.String(), b.owner.String()), cmp.Compare(a.domain, b.domain), cmp.Compare(a.option, b.option))
+	slices.SortFunc(groups, func(a, b *tooShortGroup) int {
+		return cmp.Or(cmp.Compare(a.owners[0].String(), b.owners[0].String()), cmp.Compare(a.columns[0].String(), b.columns[0].String()))
 	})
-	for _, k := range keys {
-		problems = append(problems, short[k].problem(k, byColumn))
+	for _, g := range groups {
+		problems = append(problems, g.problems(byColumn)...)
 	}
 	return problems
 }
@@ -116,38 +117,52 @@ func refusal(dec *Decision, byColumn map[schema.ColumnRef]*Decision, err error) 
 	}
 }
 
-// tooShortKey groups the columns too short for one rule's values: the column
-// whose rule decides them, their domain, and the option that bounds the
-// values. The columns of one domain share their options, so one value of
-// the option must fit them all.
-type tooShortKey struct {
-	owner  schema.ColumnRef
-	domain string
-	option string
-}
-
+// tooShortGroup holds the too-short columns of one mask.OptionScope.
 type tooShortGroup struct {
-	dec     *Decision // the first column of the group
+	first   *Decision
+	err     error // first's refusal
+	option  string
+	fits    int // the option's largest value that fits every column
 	columns []schema.ColumnRef
-	fits    int   // the largest value of the option that fits every column
-	err     error // the first column's refusal
+	owners  []schema.ColumnRef // the columns whose rules decide them (ruleOwner)
 }
 
-// problem reports a group: one column decided by its own rule as the
-// masking engine says it, and otherwise with the value that fits them all.
-func (g *tooShortGroup) problem(k tooShortKey, byColumn map[schema.ColumnRef]*Decision) Problem {
-	if len(g.columns) == 1 && ruleOwner(g.dec) == g.dec.Column {
-		return refusal(g.dec, byColumn, g.err)
+func (g *tooShortGroup) add(dec *Decision, fits int) {
+	g.columns = append(g.columns, dec.Column)
+	g.fits = min(g.fits, fits)
+	if o := ruleOwner(dec); !slices.Contains(g.owners, o) {
+		g.owners = append(g.owners, o)
 	}
-	root := byColumn[k.owner]
+}
+
+// problems reports the group at each rule to change. A lone column with its
+// own rule gets the engine's message.
+func (g *tooShortGroup) problems(byColumn map[schema.ColumnRef]*Decision) []Problem {
+	if len(g.columns) == 1 && g.owners[0] == g.columns[0] {
+		return []Problem{refusal(g.first, byColumn, g.err)}
+	}
 	what := fmt.Sprintf("%s is too short", g.columns[0])
 	if len(g.columns) > 1 {
 		what = fmt.Sprintf("%s are too short", refsText(g.columns))
 	}
-	if root.Reason == Configured {
-		return Problem{At: root.at, Message: fmt.Sprintf("%s for the values of %s's rule (%s); set %s: %d, which fits every column it masks",
-			what, k.owner, root.Use, k.option, g.fits)}
+	out := make([]Problem, len(g.owners))
+	for i, owner := range g.owners {
+		set := fmt.Sprintf("%s: %d, which fits every column it masks", g.option, g.fits)
+		if others := slices.DeleteFunc(slices.Clone(g.owners), func(o schema.ColumnRef) bool { return o == owner }); len(others) > 0 {
+			whose := "whose rule must"
+			if len(others) > 1 {
+				whose = "whose rules must"
+			}
+			set = fmt.Sprintf("%s: %d, and the same for %s, %s agree with it: that value fits every column they mask",
+				g.option, g.fits, refsText(others), whose)
+		}
+		root := byColumn[owner]
+		if root.Reason == Configured {
+			out[i] = Problem{At: root.at, Message: fmt.Sprintf("%s for the values of %s's rule (%s); set %s", what, owner, root.Use, set)}
+			continue
+		}
+		out[i] = Problem{Message: fmt.Sprintf("%s for the values of %s (%s, decided by %s); write a rule for %s with %s",
+			what, owner, root.Use, root.Source, owner, set)}
 	}
-	return Problem{Message: fmt.Sprintf("%s for the values of %s (%s, decided by %s); write a rule for %s with %s: %d, which fits every column it masks",
-		what, k.owner, root.Use, root.Source, k.owner, k.option, g.fits)}
+	return out
 }

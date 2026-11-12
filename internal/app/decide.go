@@ -11,6 +11,7 @@ import (
 	"github.com/exarth-labs/stuntdb/internal/config"
 	"github.com/exarth-labs/stuntdb/internal/mask"
 	"github.com/exarth-labs/stuntdb/internal/schema"
+	"github.com/exarth-labs/stuntdb/internal/value"
 )
 
 // The transformers that decide differently from the others: copy the value,
@@ -304,7 +305,7 @@ func (d *decider) follow(dec *Decision) {
 			return // waits for the root's review
 		}
 		if decided != nil {
-			if why := disagree(decided, root); why != "" {
+			if why := disagree(decided, root, d.columns[dec.Column].Type.Kind); why != "" {
 				d.problem("", "%s references both %s and %s, %s", dec.Column, decided.Column, root.Column, why)
 				dec.reported = true
 				return
@@ -320,16 +321,27 @@ func (d *decider) follow(dec *Decision) {
 
 // disagree says why one column can't hold the values of two columns it
 // references, or returns "" when they mask equal values alike.
-func disagree(a, b *Decision) string {
+func disagree(a, b *Decision, kind value.TypeKind) string {
 	switch {
 	case a.Use != b.Use:
 		return fmt.Sprintf("which are masked differently (%s and %s)", a.Use, b.Use)
-	case !maps.Equal(optionTexts(a.Options), optionTexts(b.Options)):
+	case !sameOptions(a, b, kind):
 		return fmt.Sprintf("which give %s different options, so it can't match both; give them the same options", a.Use)
 	case usesDomain(a.Use) && a.domain() != b.domain():
 		return fmt.Sprintf("which are in different domains (%s and %s), so it can't match both; give them one domain:", a.domain(), b.domain())
 	}
 	return ""
+}
+
+// sameOptions compares options after defaults, as domains do. Options
+// written alike are equal even when invalid, so the engine reports a bad
+// option once, at its rule.
+func sameOptions(a, b *Decision, kind value.TypeKind) bool {
+	if maps.Equal(optionTexts(a.Options), optionTexts(b.Options)) {
+		return true
+	}
+	t, ok := mask.Lookup(a.Use)
+	return ok && t.SameOptions(kind, a.Options, b.Options)
 }
 
 // usesDomain reports whether a transformer's outputs depend on the domain.

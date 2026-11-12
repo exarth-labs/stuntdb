@@ -993,3 +993,42 @@ func TestOutputsIgnoreColumn(t *testing.T) {
 		}
 	}
 }
+
+func TestSameOptions(t *testing.T) {
+	hash, _ := Lookup("hash")
+	opts := func(kv ...string) map[string]any {
+		m := map[string]any{}
+		for i := 0; i < len(kv); i += 2 {
+			m[kv[i]] = kv[i+1]
+		}
+		return m
+	}
+	tests := []struct {
+		name string
+		a, b map[string]any
+		want bool
+	}{
+		{"a default written out", nil, opts("length", "32"), true},
+		{"another value", nil, opts("length", "30"), false},
+		{"options that don't build", opts("length", "x"), opts("length", "x"), false},
+		{"an unknown option", nil, opts("size", "32"), false},
+	}
+	for _, tt := range tests {
+		if got := hash.SameOptions(value.TypeText, tt.a, tt.b); got != tt.want {
+			t.Errorf("%s: SameOptions = %v, want %v", tt.name, got, tt.want)
+		}
+	}
+}
+
+// SameOptions builds without Distinct; this proves it reads the same options.
+func TestDistinctReadsTheSameOptions(t *testing.T) {
+	for _, tr := range Catalog() {
+		for _, k := range tr.Types {
+			_, plain, errP := tr.configure(k, nil, false)
+			_, distinct, errD := tr.configure(k, nil, true)
+			if errP == nil && errD == nil && !maps.Equal(plain, distinct) {
+				t.Errorf("%s in %s reads %v, but %v where values stay distinct", tr.Name, k, plain, distinct)
+			}
+		}
+	}
+}

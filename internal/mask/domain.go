@@ -100,6 +100,30 @@ type perKey struct {
 	use    string
 }
 
+// An OptionScope holds the columns whose rules must give an option one
+// value (ResolveDomains): a domain's value columns, or a per group's,
+// where an entity option is each column's own.
+type OptionScope struct {
+	group  perKey
+	column schema.ColumnRef // set for an entity option
+	option string
+}
+
+// Scope returns the scope of one of the column's options.
+func (c ColumnRule) Scope(option string) OptionScope {
+	r := c.Rule
+	s := OptionScope{group: perKey{domain: r.DomainFor(c.Column.Ref)}, option: option}
+	if r.Per == "" {
+		return s
+	}
+	s.group.key = schema.ColumnRef{Table: c.Column.Ref.Table, Column: r.Per}
+	s.group.use = r.Use
+	if t, ok := Lookup(r.Use); ok && slices.Contains(t.entityOptions, option) {
+		s.column = c.Column.Ref
+	}
+	return s
+}
+
 // usable returns the transformer of a column's rule, when it exists and
 // takes the column's type. Otherwise Configure reports the column.
 func usable(c ColumnRule) (*Transformer, bool) {

@@ -150,6 +150,16 @@ type Transformer struct {
 // one, copies the value whatever the domain.
 func (t *Transformer) UsesDomain() bool { return !t.domainFree }
 
+// SameOptions reports whether two sets of options build and are equal once
+// defaults are filled in, so { use: hash } equals { use: hash, length: 32 }.
+// Distinct is left out: it never changes which options are read
+// (TestDistinctReadsTheSameOptions).
+func (t *Transformer) SameOptions(kind value.TypeKind, a, b map[string]any) bool {
+	_, ra, errA := t.configure(kind, a, false)
+	_, rb, errB := t.configure(kind, b, false)
+	return errA == nil && errB == nil && maps.Equal(ra, rb)
+}
+
 // Accepts reports whether the transformer can mask a column of type t.
 func (t *Transformer) Accepts(k value.TypeKind) bool { return slices.Contains(t.Types, k) }
 

@@ -220,6 +220,23 @@ func TestCheckReferences(t *testing.T) {
 		}
 	})
 
+	t.Run("parents whose options differ only by a default", func(t *testing.T) {
+		problems, lock := checkConfig(t, links(), linkRules(map[string]string{
+			"users.email":  "{ use: hash, domain: person }",
+			"admins.email": "{ use: hash, length: 32, domain: person }",
+		}))
+		if problems != "" || !strings.Contains(lock, "CONTACT: {decision: hash, source: follows N.USERS.EMAIL, domain: person}") {
+			t.Errorf("problems:\n%s\nlockfile:\n%s", problems, lock)
+		}
+	})
+	t.Run("parents with the same bad option", func(t *testing.T) {
+		bad := "{ use: hash, length: x, domain: person }"
+		problems, _ := checkConfig(t, links(), linkRules(map[string]string{"users.email": bad, "admins.email": bad}))
+		if strings.Contains(problems, "references both") || !strings.Contains(problems, "N.USERS.EMAIL: option length:") {
+			t.Errorf("problems:\n%s", problems)
+		}
+	})
+
 	tests := []struct {
 		name    string
 		changes map[string]string
@@ -408,5 +425,79 @@ func TestUnjoin(t *testing.T) {
 	}
 	if unjoin(nil) != nil {
 		t.Error("nil gives errors")
+	}
+}
+
+// Rules that must share an option get one value that fits all their
+// columns, and following the advice passes check.
+func TestTooShortInOneScope(t *testing.T) {
+	str := func(n int) value.Type { return value.Type{Kind: value.TypeString, MaxLen: n} }
+	db := &schema.Database{Namespaces: []*schema.Namespace{{Name: "N", Tables: []*schema.Table{
+		{Name: "C", Columns: []*schema.Column{
+			{Name: "ID", Type: value.Type{Kind: value.TypeInt, Bits: 64}},
+			{Name: "A", Type: str(6)},
+			{Name: "B", Type: str(5)},
+			{Name: "S", Type: str(12)},
+			{Name: "T", Type: str(10)},
+		}},
+		{Name: "D", Columns: []*schema.Column{{Name: "NAME", Type: str(5)}}},
+	}}}}
+	const rest = "    id: keep\n    s: keep\n    t: keep\n"
+	tests := []struct {
+		name, columns, fixed string
+		want                 []string
+	}{
+		{
+			"a shared domain",
+			"  n.c:\n    a: { use: first_name, domain: shared }\n    b: keep\n" + rest + "  n.d:\n    name: { use: first_name, domain: shared }\n",
+			"  n.c:\n    a: { use: first_name, domain: shared, max_length: 5 }\n    b: keep\n" + rest + "  n.d:\n    name: { use: first_name, domain: shared, max_length: 5 }\n",
+			[]string{
+				"stuntdb.yaml:6:5: N.C.A, N.D.NAME are too short for the values of N.C.A's rule (first_name); set max_length: 5, and the same for N.D.NAME, whose rule must agree with it",
+				"stuntdb.yaml:12:5: N.C.A, N.D.NAME are too short for the values of N.D.NAME's rule (first_name); set max_length: 5, and the same for N.C.A, whose rule must agree with it",
+			},
+		},
+		{
+			"a per group",
+			"  n.c:\n    a: { use: first_name, per: id }\n    b: { use: first_name, per: id }\n" + rest + "  n.d:\n    name: keep\n",
+			"  n.c:\n    a: { use: first_name, per: id, max_length: 5 }\n    b: { use: first_name, per: id, max_length: 5 }\n" + rest + "  n.d:\n    name: keep\n",
+			[]string{"N.C.A, N.C.B are too short for the values of N.C.A's rule (first_name); set max_length: 5, and the same for N.C.B"},
+		},
+		{
+			"an entity option is each column's own",
+			"  n.c:\n    a: keep\n    b: keep\n    id: keep\n    s: { use: address, part: street, per: id }\n    t: { use: address, part: street, per: id }\n  n.d:\n    name: keep\n",
+			"  n.c:\n    a: keep\n    b: keep\n    id: keep\n    s: { use: address, part: street, per: id, max_length: 12 }\n    t: { use: address, part: street, per: id, max_length: 10 }\n  n.d:\n    name: keep\n",
+			[]string{"N.C.S: address writes up to 20 characters, and the column holds 12; set max_length: 12", "N.C.T: address writes up to 20 characters, and the column holds 10; set max_length: 10"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			problems, _ := checkConfig(t, db, "columns:\n"+tt.columns)
+			for _, w := range tt.want {
+				if !strings.Contains(problems, w) {
+					t.Errorf("the problems do not contain %q:\n%s", w, problems)
+				}
+			}
+			if problems, lock := checkConfig(t, db, "columns:\n"+tt.fixed); problems != "" || lock == "" {
+				t.Errorf("after the advice, problems:\n%s", problems)
+			}
+		})
+	}
+}
+
+func TestTooShortForThreeRules(t *testing.T) {
+	var tables []*schema.Table
+	var decisions []*Decision
+	for i, name := range []schema.Ident{"A", "B", "C"} {
+		tables = append(tables, &schema.Table{Name: name, Columns: []*schema.Column{{Name: "NAME", Type: value.Type{Kind: value.TypeString, MaxLen: 7 - i}}}})
+		decisions = append(decisions, &Decision{
+			Column: schema.ColumnRef{Table: schema.TableRef{Namespace: "N", Name: name}, Column: "NAME"},
+			Use:    "first_name", Source: "config", Reason: Configured, Domain: "shared", at: "line " + string(name),
+		})
+	}
+	db := &schema.Database{Namespaces: []*schema.Namespace{{Name: "N", Tables: tables}}}
+	got := checkMasking(&source{db: db}, decisions)
+	want := "N.A.NAME, N.B.NAME, N.C.NAME are too short for the values of N.A.NAME's rule (first_name); set max_length: 5, and the same for N.B.NAME, N.C.NAME, whose rules must agree with it: that value fits every column they mask"
+	if len(got) != 3 || got[0].At != "line A" || got[0].Message != want || got[2].At != "line C" {
+		t.Errorf("problems = %v", got)
 	}
 }
