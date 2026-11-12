@@ -2,6 +2,7 @@ package mask
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"math"
@@ -646,22 +647,22 @@ func TestConfigureMistakes(t *testing.T) {
 		{"list option", column(tInt64), Rule{Use: "noise", Options: map[string]any{"percent": []any{"1"}}}, "single value"},
 		{"empty option", column(tInt64), Rule{Use: "noise", Options: map[string]any{"percent": nil}}, "has no value"},
 		{"null in NOT NULL", notNull, Rule{Use: "null"}, "NOT NULL"},
-		{"name on unique", uniqueColumn(tText), Rule{Use: "first_name"}, "first_name cannot promise that; these can: email, fpe, hash, random_token, username, uuid"},
+		{"name on unique", uniqueColumn(tText), Rule{Use: "first_name"}, "first_name cannot promise that; these can: email, fpe, hash, random_token, username"},
 		{"token on a unique number", uniqueColumn(tInt64), Rule{Use: "random_token"}, "random_token cannot promise that; these can: fpe"},
 		{"nothing fits a unique date", uniqueColumn(tDate), Rule{Use: "date_shift"}, "in a date column, no transformer can"},
 		{"null on unique", nullableUnique, Rule{Use: "null"}, "null cannot promise that"}, // SQL Server allows one NULL per unique key
 		{"short hash on unique", uniqueColumn(tText), Rule{Use: "hash", Options: map[string]any{"length": "16"}}, "option length: values here must stay distinct (a unique key shares the domain), so hash needs a length of at least 24"},
 		{"short hash in a distinct domain", column(tText), Rule{Use: "hash", Options: map[string]any{"length": "16"}, Distinct: true}, "hash needs a length of at least 24"},
-		{"hash in a short unique column", uniqueColumn(tString(20)), Rule{Use: "hash"}, "hash writes up to 32 characters, and the column holds 20, fewer than the 24 that keep values distinct; these can: fpe, random_token"},
+		{"hash in a short unique column", uniqueColumn(tString(20)), Rule{Use: "hash"}, "hash writes up to 32 characters, and the column holds 20, fewer than the 24 that keep values distinct; these fit: fpe"},
 		{"per on unique", uniqueColumn(tText), Rule{Use: "hash", Per: "id"}, "a column in a unique key can't use per"},
 		{"per without a seed", column(tText), Rule{Use: "redact", Per: "id"}, "redact takes no seed, so per has no effect"},
 		{"hash longer than column", column(tString(10)), Rule{Use: "hash", Options: map[string]any{"length": "20"}}, "hash writes up to 20 characters, and the column holds 10; set length: 10"},
 		{"name longer than column", column(tString(5)), Rule{Use: "first_name"}, "and the column holds 5; set max_length: 5"},
 		{"max_length below every name", column(tText), Rule{Use: "first_name", Options: map[string]any{"max_length": "1"}}, "option max_length: must be a whole number from"},
 		{"email in 10", column(tString(10)), Rule{Use: "email"}, "and the column holds 10, fewer than the 15 it needs at least"},
-		{"unique email in 30", uniqueColumn(tString(30)), Rule{Use: "email"}, "and the column holds 30, fewer than the 32 it needs at least"},
+		{"unique email in 30", uniqueColumn(tString(30)), Rule{Use: "email"}, "and the column holds 30, fewer than the 32 it needs at least; these fit: fpe, random_token"},
 		{"phone too long", column(tString(12)), Rule{Use: "phone"}, "phone writes up to 15 characters, and the column holds 12; set format: national (12 characters) or digits (10 characters)"},
-		{"phone shorter than every format", column(tString(9)), Rule{Use: "phone"}, "fewer than the 10 of its shortest format, digits"},
+		{"phone shorter than every format", column(tString(9)), Rule{Use: "phone"}, "fewer than the 10 of its shortest format, digits; these fit: first_name, fpe, last_name, random_token, redact, synthesize_text"},
 		{"phone format in a number column", column(tInt64), Rule{Use: "phone", Options: map[string]any{"format": "national"}}, "option format: a number column always gets the digits"},
 		{"phone in int32", column(tInt32), Rule{Use: "phone"}, "don't always fit"},
 		{"street in a number", column(tInt64), Rule{Use: "address", Options: map[string]any{"part": "street"}}, "only part: postcode"},
@@ -681,6 +682,10 @@ func TestConfigureMistakes(t *testing.T) {
 		{"uuid in 8 bytes", column(value.Type{Kind: value.TypeBinary, MaxLen: 8}), Rule{Use: "uuid"}, "16 bytes"},
 		{"password hash too long", column(tString(10)), Rule{Use: "password_hash"}, "password_hash writes up to 60 characters, and the column holds 10; set hash: to a hash that fits"},
 		{"password hash empty", column(tText), Rule{Use: "password_hash", Options: map[string]any{"hash": ""}}, "must not be empty"},
+		{"fpe in 3 characters", column(tString(3)), Rule{Use: "fpe"}, "fpe needs at least 4 characters from its alphabet (alnum) in each value, and the column holds 3"},
+		{"fpe digits in 5 characters", column(tString(5)), Rule{Use: "fpe", Options: map[string]any{"alphabet": "digits"}}, "fpe needs at least 6 characters from its alphabet (digits)"},
+		{"distinct token in 20 characters", uniqueColumn(tString(20)), Rule{Use: "random_token"}, "each token needs at least 96 random bits: at least 21 characters, and the column holds 20"},
+		{"distinct token in 11 bytes", uniqueColumn(value.Type{Kind: value.TypeBinary, MaxLen: 11}), Rule{Use: "random_token"}, "at least 12 bytes, and the column holds 11"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -692,6 +697,67 @@ func TestConfigureMistakes(t *testing.T) {
 	}
 	if _, err := Configure(withDefault, Rule{Use: "default"}); err != nil {
 		t.Errorf("default on a column with a default: %v", err)
+	}
+	// The boundaries of the refusals above.
+	for _, ok := range []struct {
+		col  Column
+		rule Rule
+	}{
+		{column(tString(4)), Rule{Use: "fpe"}},
+		{uniqueColumn(tString(21)), Rule{Use: "random_token"}},
+		{uniqueColumn(value.Type{Kind: value.TypeBinary, MaxLen: 12}), Rule{Use: "random_token"}},
+		{column(tString(5)), Rule{Use: "random_token"}}, // not distinct: any length
+	} {
+		if _, err := Configure(ok.col, ok.rule); err != nil {
+			t.Errorf("%s in %s: %v", ok.rule.Use, ok.col.Type, err)
+		}
+	}
+}
+
+// TestTooShortError checks the refusal of a column too short for a rule:
+// the option that bounds the outputs and its value that fits, so that a
+// caller can give one value for every column of a domain, or no option
+// when none can make the outputs fit.
+func TestTooShortError(t *testing.T) {
+	tests := []struct {
+		col    Column
+		rule   Rule
+		option string
+		fits   int
+	}{
+		{column(tString(5)), Rule{Use: "first_name"}, "max_length", 5},
+		{column(tString(20)), Rule{Use: "email"}, "max_length", 20},
+		{column(tString(10)), Rule{Use: "hash", Options: map[string]any{"length": "20"}}, "length", 10},
+		{column(tString(5)), Rule{Use: "redact"}, "max_length", 5},
+		{column(tString(10)), Rule{Use: "email"}, "", 0},                                            // shorter than any email
+		{uniqueColumn(tString(30)), Rule{Use: "email"}, "", 0},                                      // shorter than a tagged email
+		{uniqueColumn(tString(20)), Rule{Use: "hash"}, "", 0},                                       // shorter than a distinct hash
+		{column(tString(12)), Rule{Use: "phone"}, "", 0},                                            // a format fixes it, not a length
+		{column(tString(10)), Rule{Use: "password_hash"}, "", 0},                                    // another hash fixes it
+		{column(tString(1)), Rule{Use: "address", Options: map[string]any{"part": "state"}}, "", 0}, // shorter than a state
+	}
+	for _, tt := range tests {
+		_, err := Configure(tt.col, tt.rule)
+		var short *TooShortError
+		if !errors.As(err, &short) {
+			t.Errorf("%s in %s: error %v is not a TooShortError", tt.rule.Use, tt.col.Type, err)
+			continue
+		}
+		if short.Option != tt.option || short.Fits != tt.fits {
+			t.Errorf("%s in %s: Option %q, Fits %d; want %q, %d", tt.rule.Use, tt.col.Type, short.Option, short.Fits, tt.option, tt.fits)
+		}
+		if tt.option != "" && !strings.HasSuffix(short.Error(), fmt.Sprintf("; set %s: %d", tt.option, tt.fits)) {
+			t.Errorf("%s in %s: the message %q doesn't give the value", tt.rule.Use, tt.col.Type, short)
+		}
+	}
+	// When nothing fits a column, the message says so.
+	_, err := Configure(column(tString(1)), Rule{Use: "address", Options: map[string]any{"part": "state"}})
+	if err == nil || !strings.HasSuffix(err.Error(), "; these fit: random_token, synthesize_text") {
+		t.Errorf("alternatives in one character: %v", err)
+	}
+	_, err = Configure(uniqueColumn(tString(1)), Rule{Use: "email"})
+	if err == nil || !strings.HasSuffix(err.Error(), "; no other transformer fits the column") {
+		t.Errorf("no alternative: %v", err)
 	}
 }
 

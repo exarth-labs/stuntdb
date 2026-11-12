@@ -8,7 +8,10 @@ columns:
   main."order.items":
     Order Id: {decision: keep, source: rule safe.id}
   main.users:
+    born: {decision: date_shift, source: config, options: {max_days: "30"}, per: id}
+    contact: {decision: email, source: follows main.people.email, domain: main.people.email}
     created_at: {decision: keep, source: rule safe.timestamp}
-    email: {decision: email, source: config}
+    email: {decision: email, source: config, options: {max_length: "40"}}
     nickname: {decision: "null", source: config}
+    note: {decision: constant, source: config, options: {empty: "", flag: "true", merge: "<<", nul: "null", value: 'a: b #c'}}
     referral_code: {decision: UNREVIEWED}

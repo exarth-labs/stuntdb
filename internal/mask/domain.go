@@ -31,7 +31,8 @@ type ColumnRule struct {
 //     reference it, but by default it shares its key's domain.
 //   - The value columns of a domain use the same transformer with the same
 //     options, after their defaults are filled in, in column types the
-//     transformer masks alike (Transformer.MasksAlike).
+//     transformer masks alike (Transformer.MasksAlike). That transformer
+//     isn't default, which gives each column its own database default.
 //   - The columns of a per group (the same Per key, domain and transformer)
 //     use the same options, except the transformer's entity options, such
 //     as address's part.
@@ -61,7 +62,7 @@ func ResolveDomains(cols []ColumnRule) ([]Rule, error) {
 		r := c.Rule
 		r.Distinct = false
 		rules[i] = r
-		domain := r.domain(ref)
+		domain := r.DomainFor(ref)
 		if r.Per == "" {
 			values[domain] = append(values[domain], i)
 			continue
@@ -134,6 +135,10 @@ func checkDomain(domain string, cols []ColumnRule, members []int, distinct bool)
 		return ""
 	}
 	t, _ := usable(cols[ok[0]])
+	if t.class(cols[ok[0]].Column.Type) == noClass {
+		return fmt.Sprintf("domain %s: %s gives each column a value of its own, not one from the input, so equal values "+
+			"can't stay equal in %s; give them another transformer, or separate domains", domain, t.Name, refList(refsOf(cols, ok)))
+	}
 
 	byClass := map[string][]int{}
 	for _, i := range ok {
@@ -238,6 +243,15 @@ func typesAndColumns(cols []ColumnRule, members []int) string {
 	}
 	slices.Sort(types)
 	return fmt.Sprintf("%s (%s)", strings.Join(types, ", "), refList(refs))
+}
+
+// refsOf returns the columns of some members.
+func refsOf(cols []ColumnRule, members []int) []schema.ColumnRef {
+	refs := make([]schema.ColumnRef, len(members))
+	for i, m := range members {
+		refs[i] = cols[m].Column.Ref
+	}
+	return refs
 }
 
 // refList lists columns, sorted.

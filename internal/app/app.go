@@ -19,12 +19,6 @@ import (
 	"github.com/exarth-labs/stuntdb/internal/schema"
 )
 
-// GeneratorVersion is the version of the fake-value generators, which
-// decides the masked values. The lockfile records it, so that an upgrade of
-// stuntdb never changes masked values without a reviewed lockfile change.
-// It moves to the masking package with the generators themselves.
-const GeneratorVersion = 1
-
 // appName identifies stuntdb in the database server's list of sessions.
 const appName = "stuntdb"
 

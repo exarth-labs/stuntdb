@@ -106,9 +106,14 @@
           "properties": {
             "use": { "$ref": "#/$defs/transformer" },
             "domain": {
-              "description": "Columns in the same domain map equal values to equal fake values, so that joins between them still work. The default is namespace.table.column.",
+              "description": "Columns in the same domain map equal values to equal fake values, so that joins between them still work. The default is namespace.table.column, or with per, the per column's domain.",
               "type": "string",
               "pattern": "^[A-Za-z0-9_.-]+$"
+            },
+            "per": {
+              "description": "Another column of the same row, such as the id of the person it belongs to, whose value seeds this column instead of its own, so that one key's columns change together: all of a person's dates move by the same number of days. Only transformers that draw fake values take it, and a column in a unique key or one that foreign keys reference can't use it.",
+              "type": "string",
+              "minLength": 1
             }
           }
         }

@@ -62,6 +62,7 @@ columns:
     nickname: null
     created_at: keep
     phone: { use: phone, region: PK }
+    born: { use: date_shift, per: id, max_days: 30 }
   orders:
     note: synthesize_text
   main."order.items":
@@ -116,6 +117,9 @@ func TestLoadExample(t *testing.T) {
 	}
 	if r := got["phone"]; r.Use != "phone" || r.Options["region"] != "PK" {
 		t.Errorf("phone rule = %+v", r)
+	}
+	if r := got["born"]; r.Per != "id" || r.Options["per"] != nil || OptionText(r.Options["max_days"]) != "30" {
+		t.Errorf("born rule = %+v", r)
 	}
 	if cfg.Columns[2].Table != (TableName{Namespace: "main", Name: "order.items"}) {
 		t.Errorf("quoted table = %+v", cfg.Columns[2].Table)
@@ -523,4 +527,24 @@ func FuzzLoad(f *testing.F) {
 			}
 		}
 	})
+}
+
+// OptionText writes each kind of YAML value as the masking engine reads it.
+func TestOptionText(t *testing.T) {
+	tests := []struct {
+		in   any
+		want string
+	}{
+		{"PK", "PK"},
+		{json.Number("30"), "30"},
+		{true, "true"},
+		{false, "false"},
+		{nil, ""},
+		{[]any{"a"}, "[a]"},
+	}
+	for _, tt := range tests {
+		if got := OptionText(tt.in); got != tt.want {
+			t.Errorf("OptionText(%#v) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
 }

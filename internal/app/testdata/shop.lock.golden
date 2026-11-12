@@ -15,7 +15,7 @@ columns:
     SEARCH_KEY: {decision: generated}
     TIER: {decision: keep, source: config}
   APP.ORDERS:
-    BILLING_EMAIL: {decision: email, source: follows APP.CUSTOMERS.EMAIL}
+    BILLING_EMAIL: {decision: email, source: follows APP.CUSTOMERS.EMAIL, domain: APP.CUSTOMERS.EMAIL}
     CUSTOMER_ID: {decision: keep, source: follows APP.CUSTOMERS.ID}
     ID: {decision: keep, source: rule core.surrogate_key}
     TOTAL: {decision: keep, source: config}

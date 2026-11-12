@@ -151,7 +151,8 @@ var (
 
 func dateShiftTransformer() *Transformer {
 	return &Transformer{
-		Name: "date_shift",
+		Name:      "date_shift",
+		readsText: true, // ISO 8601 dates in text columns
 		Summary: "Moves a date or timestamp by a keyed number of days, from 1 to max_days (1 to 36500, default 365), " +
 			"earlier or later. The time of day and time zone are kept. Text in ISO 8601 form is shifted too. " +
 			"With per: <key column>, the columns with the same max_days move all of one key's dates by the same " +

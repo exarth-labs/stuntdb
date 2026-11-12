@@ -4,12 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"path/filepath"
+	"slices"
+	"strings"
 
 	"github.com/exarth-labs/stuntdb/internal/buildinfo"
 	"github.com/exarth-labs/stuntdb/internal/classify"
 	"github.com/exarth-labs/stuntdb/internal/config"
 	"github.com/exarth-labs/stuntdb/internal/errs"
+	"github.com/exarth-labs/stuntdb/internal/mask"
 	"github.com/exarth-labs/stuntdb/internal/schema"
 )
 
@@ -88,6 +92,7 @@ func Check(ctx context.Context, req CheckRequest) (*CheckResult, error) {
 	rules, problems := resolveRules(src, cfg.Columns)
 	decisions, mistakes := decide(src, classify.Default().Database(src.db), rules, cfg.Masking.Unclassified)
 	problems = append(problems, mistakes...)
+	problems = append(problems, checkMasking(src, decisions)...)
 
 	res := &CheckResult{
 		Config:   cfg.Path,
@@ -128,7 +133,7 @@ func Check(ctx context.Context, req CheckRequest) (*CheckResult, error) {
 func newLock(db *schema.Database, decisions []*Decision) *config.Lock {
 	lock := &config.Lock{
 		GeneratedBy:       "stuntdb " + buildinfo.Get().Version,
-		GeneratorVersion:  GeneratorVersion,
+		GeneratorVersion:  mask.GeneratorVersion,
 		SchemaFingerprint: db.Fingerprint(),
 	}
 	var table *config.LockTable
@@ -138,13 +143,28 @@ func newLock(db *schema.Database, decisions []*Decision) *config.Lock {
 			table = &config.LockTable{Table: name}
 			lock.Tables = append(lock.Tables, table)
 		}
-		c := &config.LockColumn{Column: string(dec.Column.Column), Decision: dec.Use}
-		if dec.Use != config.Unreviewed && dec.Use != config.Generated {
-			c.Source = dec.Source
-		}
-		table.Columns = append(table.Columns, c)
+		table.Columns = append(table.Columns, lockColumn(dec))
 	}
 	return lock
+}
+
+// lockColumn records a decision: everything that decides the column's fake
+// values. The domain is recorded where it changes them and isn't the one
+// the rule implies (the column's own, or with per, the per column's), as
+// for a foreign key, which takes its root's.
+func lockColumn(dec *Decision) *config.LockColumn {
+	c := &config.LockColumn{Column: string(dec.Column.Column), Decision: dec.Use}
+	if dec.Use == config.Unreviewed || dec.Use == config.Generated {
+		return c
+	}
+	c.Source = dec.Source
+	c.Options = optionTexts(dec.Options)
+	implied := mask.Rule{Per: dec.Per}.DomainFor(dec.Column)
+	if d := dec.domain(); usesDomain(dec.Use) && d != implied {
+		c.Domain = d
+	}
+	c.Per = string(dec.Per)
+	return c
 }
 
 // lockProblems compares the decisions with the lockfile at path. Every
@@ -188,8 +208,8 @@ func lockProblems(path string, cur *config.Lock) ([]Problem, error) {
 			switch o := before[ref]; {
 			case o == nil:
 				add(path, "%s is new: %s; %s", ref, describe(c), update)
-			case o.Decision != c.Decision || o.Source != c.Source:
-				add(o.At.String(), "%s changed: %s, was %s; %s", ref, describe(c), describe(o), update)
+			case !o.SameRule(c):
+				add(o.At.String(), "%s changed: %s; %s", ref, changes(o, c), update)
 			}
 		}
 	}
@@ -207,6 +227,52 @@ func describe(c *config.LockColumn) string {
 		return c.Decision
 	}
 	return c.Decision + " (" + c.Source + ")"
+}
+
+// changes says how a column's decision changed since the lockfile was
+// written. It names the options that changed, never their values: an
+// option such as constant's value may be private.
+func changes(was, now *config.LockColumn) string {
+	var out []string
+	if was.Decision != now.Decision || was.Source != now.Source {
+		out = append(out, fmt.Sprintf("%s, was %s", describe(now), describe(was)))
+	}
+	var options []string
+	for _, k := range slices.Sorted(maps.Keys(was.Options)) {
+		if v, ok := now.Options[k]; !ok || v != was.Options[k] {
+			options = append(options, k)
+		}
+	}
+	for _, k := range slices.Sorted(maps.Keys(now.Options)) {
+		if _, ok := was.Options[k]; !ok {
+			options = append(options, k)
+		}
+	}
+	if len(options) > 0 {
+		slices.Sort(options)
+		out = append(out, "options changed: "+strings.Join(options, ", "))
+	}
+	if was.Domain != now.Domain {
+		out = append(out, fmt.Sprintf("domain %s, was %s", orDefault(now.Domain), orDefault(was.Domain)))
+	}
+	if was.Per != now.Per {
+		out = append(out, fmt.Sprintf("per %s, was %s", orNone(now.Per), orNone(was.Per)))
+	}
+	return strings.Join(out, "; ")
+}
+
+func orDefault(domain string) string {
+	if domain == "" {
+		return "the column's own"
+	}
+	return domain
+}
+
+func orNone(per string) string {
+	if per == "" {
+		return "none"
+	}
+	return per
 }
 
 func tableName(ref schema.TableRef) config.TableName {

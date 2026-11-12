@@ -87,7 +87,7 @@ func TestReferences(t *testing.T) {
 		}
 	}
 	text := problemText(problems)
-	if !strings.Contains(text, "N.CHAIN.TWO references both N.ROOTS.A (hash) and N.ROOTS.B (redact), which are masked differently") || len(problems) != 1 {
+	if !strings.Contains(text, "N.CHAIN.TWO references both N.ROOTS.A and N.ROOTS.B, which are masked differently (hash and redact)") || len(problems) != 1 {
 		t.Errorf("problems:\n%s", text)
 	}
 
@@ -141,4 +141,23 @@ func TestSuggestionText(t *testing.T) {
 			t.Errorf("suggestion = %q, want %q", got, tt.want)
 		}
 	}
+}
+
+// A secret kept by masking.unclassified: keep is replaced as its rule pack
+// suggests, with the pack's options.
+func TestSecretOptionsUnderKeep(t *testing.T) {
+	db := graph()
+	matches := classify.Default().Database(db)
+	ref := schema.ColumnRef{Table: schema.TableRef{Namespace: "N", Name: "ROOTS"}, Column: "UNDECIDED"}
+	matches[ref] = classify.Match{Class: classify.Secret, Rule: "test.secret", Use: "hash", Options: map[string]string{"length": "30"}, Confidence: 1}
+	decisions, _ := decide(&source{db: db}, matches, nil, config.PolicyKeep)
+	for _, dec := range decisions {
+		if dec.Column == ref {
+			if dec.Use != "hash" || config.OptionText(dec.Options["length"]) != "30" {
+				t.Errorf("decision = %s %v", dec.Use, dec.Options)
+			}
+			return
+		}
+	}
+	t.Fatal("no decision for the column")
 }

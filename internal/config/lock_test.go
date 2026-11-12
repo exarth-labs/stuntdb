@@ -22,7 +22,10 @@ func sampleLock() *Lock {
 		Tables: []*LockTable{
 			{Table: TableName{Namespace: "main", Name: "users"}, Columns: []*LockColumn{
 				{Column: "referral_code", Decision: Unreviewed},
-				{Column: "email", Decision: "email", Source: "config"},
+				{Column: "email", Decision: "email", Source: "config", Options: map[string]string{"max_length": "40"}},
+				{Column: "contact", Decision: "email", Source: "follows main.people.email", Domain: "main.people.email"},
+				{Column: "born", Decision: "date_shift", Source: "config", Options: map[string]string{"max_days": "30"}, Per: "id"},
+				{Column: "note", Decision: "constant", Source: "config", Options: map[string]string{"value": "a: b #c", "empty": "", "flag": "true", "nul": "null", "merge": "<<"}},
 				{Column: "nickname", Decision: "null", Source: "config"},
 				{Column: "created_at", Decision: "keep", Source: "rule safe.timestamp"},
 			}},
@@ -71,7 +74,7 @@ func TestLockRoundTrip(t *testing.T) {
 	for _, wt := range want.Tables {
 		for _, wc := range wt.Columns {
 			c := l.Column(wt.Table, wc.Column)
-			if c == nil || c.Decision != wc.Decision || c.Source != wc.Source {
+			if c == nil || !c.SameRule(wc) {
 				t.Errorf("%s.%s = %+v, want %+v", wt.Table, wc.Column, c, wc)
 			}
 		}
@@ -127,6 +130,8 @@ func TestReadLockErrors(t *testing.T) {
 		{"no decision", "lock_version: 1\ncolumns:\n  users:\n    email: {source: config}\n", `:4:5: column "email" has no decision`},
 		{"bad table", "lock_version: 1\ncolumns:\n  a.b.c:\n    x: {decision: keep}\n", ":3:3: a table is written as"},
 		{"edited by hand", "lock_version: 1\ncolumns:\n  users:\n    email: keep\n", `column "email" must have a decision`},
+		{"options not a set", "lock_version: 1\ncolumns:\n  users:\n    email: {decision: email, options: 40}\n", ":4:39: options must be a set of names and values"},
+		{"an option not a value", "lock_version: 1\ncolumns:\n  users:\n    email: {decision: email, options: {max_length: [1]}}\n", ":4:52: must be text"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -139,5 +144,35 @@ func TestReadLockErrors(t *testing.T) {
 				t.Errorf("ReadLock = %v, want an error with %q", err, tt.want)
 			}
 		})
+	}
+}
+
+// SameRule notices a change in anything that decides the fake values.
+func TestLockSameRule(t *testing.T) {
+	base := func() *LockColumn {
+		return &LockColumn{Column: "c", Decision: "email", Source: "config", Options: map[string]string{"max_length": "40"}, Domain: "d", Per: "id"}
+	}
+	if !base().SameRule(base()) {
+		t.Fatal("a decision differs from itself")
+	}
+	changes := map[string]func(*LockColumn){
+		"decision": func(c *LockColumn) { c.Decision = "hash" },
+		"source":   func(c *LockColumn) { c.Source = "rule core.email" },
+		"option":   func(c *LockColumn) { c.Options["max_length"] = "30" },
+		"options":  func(c *LockColumn) { c.Options = nil },
+		"domain":   func(c *LockColumn) { c.Domain = "" },
+		"per":      func(c *LockColumn) { c.Per = "" },
+	}
+	for name, change := range changes {
+		c := base()
+		change(c)
+		if c.SameRule(base()) || base().SameRule(c) {
+			t.Errorf("a changed %s is the same rule", name)
+		}
+	}
+	at := base()
+	at.At = Position{File: "x", Line: 3}
+	if !at.SameRule(base()) {
+		t.Error("the position in the file changes the rule")
 	}
 }

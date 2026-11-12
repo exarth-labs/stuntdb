@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -16,7 +17,9 @@ import (
 	"github.com/exarth-labs/stuntdb/internal/classify"
 	"github.com/exarth-labs/stuntdb/internal/config"
 	"github.com/exarth-labs/stuntdb/internal/errs"
+	"github.com/exarth-labs/stuntdb/internal/mask"
 	"github.com/exarth-labs/stuntdb/internal/outfile"
+	"github.com/exarth-labs/stuntdb/internal/schema"
 	"github.com/exarth-labs/stuntdb/schemas"
 )
 
@@ -69,6 +72,7 @@ func Init(ctx context.Context, req InitRequest) (*InitResult, error) {
 	// any problem once the rules are written.
 	decisions, _ := decide(src, classify.Default().Database(src.db), nil, config.PolicyFail)
 
+	fitSuggestions(src, decisions)
 	w := starter{url: req.sourceURLSetting()}
 	res := &InitResult{Path: path, Columns: len(decisions)}
 	for _, ns := range src.db.Namespaces {
@@ -226,6 +230,9 @@ func (w *starter) columns(decisions []*Decision) {
 			if m.Class == classify.Secret {
 				r.comment += "; secrets are always replaced"
 			}
+			if dec.note != "" {
+				r.comment += "; " + dec.note
+			}
 		}
 		t.rules = append(t.rules, r)
 	}
@@ -271,6 +278,59 @@ func (w *starter) columns(decisions []*Decision) {
 			}
 			w.line(`    # ? %s`, r.key)
 			w.line(`    # :%s  # %s`, value, r.comment)
+		}
+	}
+}
+
+// fitSuggestions makes each suggested rule fit its column and the foreign
+// keys that would follow it: when the suggestion's values are too long for
+// one of them, it takes the max_length (or length) that fits them all, the
+// value "stuntdb check" would ask for. When no value fits, the decision's
+// note says so, and check explains why. Lengths are written into the
+// suggestion, never taken from the schema later: the reviewer accepts them.
+func fitSuggestions(src *source, decisions []*Decision) {
+	columns := describeColumns(src)
+	followers := map[schema.ColumnRef][]schema.ColumnRef{}
+	for _, dec := range decisions {
+		if dec.Follows != nil && dec.Use == config.Unreviewed {
+			followers[*dec.Follows] = append(followers[*dec.Follows], dec.Column)
+		}
+	}
+	for _, dec := range decisions {
+		if !needsRule(dec) || dec.Match.Class == classify.Unclassified {
+			continue
+		}
+		group := append([]schema.ColumnRef{dec.Column}, followers[dec.Column]...)
+		rule := mask.Rule{Use: dec.Match.Use, Options: matchOptions(dec.Match)}
+		for _, ref := range group {
+			rule.Distinct = rule.Distinct || columns[ref].Unique
+		}
+		option, fits := "", 0
+		var misfits []schema.ColumnRef
+		for _, ref := range group {
+			_, err := mask.Configure(columns[ref], rule)
+			var tooShort *mask.TooShortError
+			switch {
+			case err == nil:
+			case errors.As(err, &tooShort) && tooShort.Option != "":
+				if option == "" || tooShort.Fits < fits {
+					option, fits = tooShort.Option, tooShort.Fits
+				}
+			default:
+				misfits = append(misfits, ref)
+			}
+		}
+		if option != "" {
+			options := maps.Clone(dec.Match.Options)
+			if options == nil {
+				options = map[string]string{}
+			}
+			options[option] = strconv.Itoa(fits)
+			dec.Match.Options = options
+			dec.note = option + " fits the shortest column"
+		}
+		if len(misfits) > 0 {
+			dec.note = fmt.Sprintf("it doesn't fit %s; stuntdb check explains why", refsText(misfits))
 		}
 	}
 }

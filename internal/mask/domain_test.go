@@ -216,6 +216,7 @@ func TestResolveTypes(t *testing.T) {
 		{"date_shift", tDate, tTimestamp, false, "date_shift masks equal values differently"},
 		{"date_shift", tTimestamp, tTimeTZ, false, "date_shift masks equal values differently"},
 		{"date_shift", tDate, tText, false, "date_shift masks equal values differently"},
+		{"default", tText, tText, false, "domain shared: default gives each column a value of its own, not one from the input, so equal values can't stay equal in main.t.a, main.t.b"},
 		{"phone", tInt64, tDecimal20, false, ""},
 		{"phone", tInt64, tText, false, "phone masks equal values differently"},
 		{"email", tString(100), tText, true, ""},
@@ -242,7 +243,9 @@ func TestResolveTypes(t *testing.T) {
 
 // TestResolveTypesFollowDeclarations checks, for every transformer and
 // every pair of column kinds it takes, that a domain is refused exactly
-// when the transformer doesn't mask them alike.
+// when the transformer doesn't mask them alike. The two rules are the same
+// and have no options, so a refusal can only come from the column types,
+// or for default, from its outputs that never come from the value.
 func TestResolveTypesFollowDeclarations(t *testing.T) {
 	for _, tr := range Catalog() {
 		for _, ka := range tr.Types {
@@ -252,7 +255,7 @@ func TestResolveTypesFollowDeclarations(t *testing.T) {
 					{col("t", "a", a), Rule{Use: tr.Name, Domain: "shared"}},
 					{col("t", "b", b), Rule{Use: tr.Name, Domain: "shared"}},
 				})
-				refused := err != nil && strings.Contains(err.Error(), "masks equal values differently")
+				refused := err != nil
 				if refused == tr.MasksAlike(a, b) {
 					t.Errorf("%s with %s and %s: refused = %v, but MasksAlike = %v (%v)", tr.Name, a, b, refused, tr.MasksAlike(a, b), err)
 				}
@@ -670,5 +673,44 @@ func TestKindFamily(t *testing.T) {
 	}
 	if kindFamily(value.KindNull) != 0 || typeFamily(value.TypeInvalid) != 0 {
 		t.Error("NULL has a family")
+	}
+}
+
+// TestUsesDomain proves every transformer's declaration: masking the same
+// values in two domains changes some output exactly when the transformer
+// says it uses the domain.
+func TestUsesDomain(t *testing.T) {
+	for _, tr := range Catalog() {
+		changed, masked := false, false
+		for _, kind := range tr.Types {
+			col := column(sampleType(kind))
+			col.HasDefault = true
+			rule := Rule{Use: tr.Name, Options: sampleOptions(tr.Name, kind)}
+			if _, err := Configure(col, rule); err != nil {
+				continue
+			}
+			a, b := newMaskerRule(t, col, rule), newMaskerRule(t, col, rule)
+			a.ctx.Domain, b.ctx.Domain = "domain.a", "domain.b"
+			for _, in := range sampleValues(t, kind) {
+				oa, errA := a.mask(in)
+				ob, errB := b.mask(in)
+				if errA != nil || errB != nil {
+					continue
+				}
+				masked = true
+				if !dbEqual(oa, ob) {
+					changed = true
+				}
+			}
+		}
+		if !masked && tr.Name != "default" { // default masks no value
+			t.Errorf("%s: no sample was masked", tr.Name)
+		}
+		if changed != tr.UsesDomain() && tr.Name != "default" {
+			t.Errorf("%s: outputs change with the domain: %v, but UsesDomain = %v", tr.Name, changed, tr.UsesDomain())
+		}
+	}
+	if d, _ := Lookup("default"); d.UsesDomain() {
+		t.Error("default leaves the column to the database, whatever the domain")
 	}
 }

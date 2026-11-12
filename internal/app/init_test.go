@@ -12,6 +12,7 @@ import (
 	"github.com/exarth-labs/stuntdb/internal/config"
 	"github.com/exarth-labs/stuntdb/internal/errs"
 	"github.com/exarth-labs/stuntdb/internal/schema"
+	"github.com/exarth-labs/stuntdb/internal/value"
 )
 
 func (f *fixture) init(t *testing.T, sourceURL string) (*InitResult, error) {
@@ -208,5 +209,54 @@ func TestInitWithNothingToReview(t *testing.T) {
 	got := f.read(t, config.DefaultPath)
 	if strings.Contains(got, "\ncolumns:") || !strings.Contains(got, "# Every column is decided without a rule") {
 		t.Errorf("starter:\n%s", got)
+	}
+}
+
+// TestInitFitsSuggestions checks that a suggestion too long for its column,
+// or for a foreign key that would follow it, carries the max_length that
+// fits them all, and that check then accepts it; and that a suggestion no
+// length can fit says so, for check to explain.
+func TestInitFitsSuggestions(t *testing.T) {
+	str := func(n int) value.Type { return value.Type{Kind: value.TypeString, MaxLen: n} }
+	db := &schema.Database{Namespaces: []*schema.Namespace{{Name: "N", Tables: []*schema.Table{
+		{
+			Name:       "PEOPLE",
+			Columns:    []*schema.Column{{Name: "ID", Type: intType, Identity: &schema.Identity{}}, {Name: "FIRST_NAME", Type: str(100)}, {Name: "LAST_NAME", Type: str(7)}, {Name: "EMAIL", Type: str(100)}},
+			PrimaryKey: &schema.Key{Columns: []schema.Ident{"ID"}},
+			Uniques:    []*schema.Key{{Columns: []schema.Ident{"EMAIL"}}},
+		},
+		{
+			Name:    "REFS",
+			Columns: []*schema.Column{{Name: "FIRST", Type: str(6)}, {Name: "LAST", Type: str(6)}, {Name: "EMAIL", Type: str(20)}},
+			ForeignKeys: []*schema.ForeignKey{
+				{Columns: []schema.Ident{"FIRST"}, Ref: schema.TableRef{Namespace: "N", Name: "PEOPLE"}, RefColumns: []schema.Ident{"FIRST_NAME"}},
+				{Columns: []schema.Ident{"LAST"}, Ref: schema.TableRef{Namespace: "N", Name: "PEOPLE"}, RefColumns: []schema.Ident{"LAST_NAME"}},
+				{Columns: []schema.Ident{"EMAIL"}, Ref: schema.TableRef{Namespace: "N", Name: "PEOPLE"}, RefColumns: []schema.Ident{"EMAIL"}},
+			},
+		},
+	}}}}
+	f := newFixture(t, db)
+	if _, err := f.init(t, "fake:shop"); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	starter := f.read(t, config.DefaultPath)
+	for _, want := range []string{
+		"# FIRST_NAME: { use: first_name, max_length: 6 }",
+		"# LAST_NAME: { use: last_name, max_length: 6 }", // the smaller of its 7 and its foreign key's 6
+		"max_length fits the shortest column",
+		"it doesn't fit N.REFS.EMAIL; stuntdb check explains why",
+	} {
+		if !strings.Contains(starter, want) {
+			t.Errorf("the starter does not contain %q:\n%s", want, starter)
+		}
+	}
+
+	// Accepted, every fitted suggestion passes; the email can't fit its
+	// foreign key, and check says why.
+	f.write(t, config.DefaultPath, accept(starter))
+	res, _ := f.check(t, true)
+	text := problemText(res.Problems)
+	if strings.Contains(text, "NAME") || !strings.Contains(text, "N.REFS.EMAIL: email writes up to") {
+		t.Errorf("problems:\n%s", text)
 	}
 }
