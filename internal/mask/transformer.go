@@ -220,7 +220,7 @@ func Configure(col Column, rule Rule) (Func, error) {
 		return nil, fmt.Errorf("there is no transformer %s (stuntdb transformers lists them)", rule.Use)
 	}
 	if !t.Accepts(col.Type.Kind) {
-		return nil, fmt.Errorf("%s cannot mask a %s column; it masks %s", t.Name, col.Type, typeList(t.Types))
+		return nil, fmt.Errorf("%s cannot mask a column of type %s; it masks %s", t.Name, col.Type, typeList(t.Types))
 	}
 	f, _, err := t.configure(col.Type.Kind, rule.Options, rule.Distinct || col.Unique)
 	if err != nil {
@@ -256,7 +256,7 @@ func (t *Transformer) configure(kind value.TypeKind, options map[string]any, dis
 	if kind == value.TypeString {
 		kind = value.TypeText
 	}
-	o := newOptions(t, options)
+	o := newOptions(t, kind, options)
 	f, err := t.build(target{kind: kind, distinct: distinct}, o)
 	if err := errors.Join(err, o.err()); err != nil {
 		return nil, nil, err
@@ -269,7 +269,7 @@ func (t *Transformer) configure(kind value.TypeKind, options map[string]any, dis
 func distinctAlternatives(col Column, except string) string {
 	names := alternatives(col, true, except)
 	if len(names) == 0 {
-		return fmt.Sprintf("; in a %s column, no transformer can, so keep the values or change the key", col.Type)
+		return fmt.Sprintf("; in a column of type %s, no transformer can, so keep the values or change the key", col.Type)
 	}
 	return "; these can: " + strings.Join(names, ", ")
 }
@@ -363,6 +363,7 @@ func typeList(kinds []value.TypeKind) string {
 // option the transformer does not take.
 type Options struct {
 	t    *Transformer
+	kind value.TypeKind
 	raw  map[string]any
 	used map[string]bool
 	errs []error
@@ -374,8 +375,8 @@ type Options struct {
 	resolved map[string]string
 }
 
-func newOptions(t *Transformer, raw map[string]any) *Options {
-	return &Options{t: t, raw: raw, used: map[string]bool{}, resolved: map[string]string{}}
+func newOptions(t *Transformer, kind value.TypeKind, raw map[string]any) *Options {
+	return &Options{t: t, kind: kind, raw: raw, used: map[string]bool{}, resolved: map[string]string{}}
 }
 
 // resolve records the value a build uses for an option, in a canonical
@@ -390,9 +391,12 @@ func (o *Options) fail(name, format string, args ...any) {
 func (o *Options) err() error {
 	for _, name := range slices.Sorted(maps.Keys(o.raw)) {
 		if !o.used[name] {
-			if len(o.t.Options) == 0 {
+			switch {
+			case slices.Contains(o.t.Options, name):
+				o.errs = append(o.errs, fmt.Errorf("%s doesn't use option %s in a column of type %s; remove it", o.t.Name, name, o.kind))
+			case len(o.t.Options) == 0:
 				o.errs = append(o.errs, fmt.Errorf("%s takes no option %s", o.t.Name, name))
-			} else {
+			default:
 				o.errs = append(o.errs, fmt.Errorf("%s takes no option %s; its options are %s", o.t.Name, name, strings.Join(o.t.Options, ", ")))
 			}
 		}
@@ -499,7 +503,7 @@ func parseInt(s string) (int, error) {
 // errKind is the error for a value whose kind a transformer cannot mask,
 // such as text in a SQLite INTEGER column. It names kinds, never the value.
 func errKind(name string, in value.Value) error {
-	return fmt.Errorf("%s cannot mask a %s value", name, in.Kind())
+	return fmt.Errorf("%s cannot mask a value of type %s", name, in.Kind())
 }
 
 // catalog holds the built-in transformers, by name. init fills it once, at

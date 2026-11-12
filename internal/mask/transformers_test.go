@@ -639,8 +639,9 @@ func TestConfigureMistakes(t *testing.T) {
 	}{
 		{"unknown", column(tText), Rule{Use: "emial"}, "did you mean email"},
 		{"unknown, no suggestion", column(tText), Rule{Use: "zzzzzz"}, "there is no transformer zzzzzz"},
-		{"wrong type", column(tDate), Rule{Use: "email"}, "email cannot mask a date column"},
+		{"wrong type", column(tDate), Rule{Use: "email"}, "email cannot mask a column of type date"},
 		{"unknown option", column(tText), Rule{Use: "email", Options: map[string]any{"domain2": "x"}}, "email takes no option domain2"},
+		{"option unused by the type", column(tUUID), Rule{Use: "hash", Options: map[string]any{"length": "16"}}, "hash doesn't use option length in a column of type uuid; remove it"},
 		{"unknown option listed", column(tText), Rule{Use: "phone", Options: map[string]any{"country": "x"}}, "its options are region"},
 		{"bad choice", column(tText), Rule{Use: "phone", Options: map[string]any{"region": "FR"}}, "must be one of: US, GB"},
 		{"bad number", column(tInt64), Rule{Use: "noise", Options: map[string]any{"percent": "0"}}, "from 1 to 100"},
@@ -649,7 +650,7 @@ func TestConfigureMistakes(t *testing.T) {
 		{"null in NOT NULL", notNull, Rule{Use: "null"}, "NOT NULL"},
 		{"name on unique", uniqueColumn(tText), Rule{Use: "first_name"}, "first_name cannot promise that; these can: email, fpe, hash, random_token, username"},
 		{"token on a unique number", uniqueColumn(tInt64), Rule{Use: "random_token"}, "random_token cannot promise that; these can: fpe"},
-		{"nothing fits a unique date", uniqueColumn(tDate), Rule{Use: "date_shift"}, "in a date column, no transformer can"},
+		{"nothing fits a unique date", uniqueColumn(tDate), Rule{Use: "date_shift"}, "in a column of type date, no transformer can"},
 		{"null on unique", nullableUnique, Rule{Use: "null"}, "null cannot promise that"}, // SQL Server allows one NULL per unique key
 		{"short hash on unique", uniqueColumn(tText), Rule{Use: "hash", Options: map[string]any{"length": "16"}}, "option length: values here must stay distinct (a unique key shares the domain), so hash needs a length of at least 24"},
 		{"short hash in a distinct domain", column(tText), Rule{Use: "hash", Options: map[string]any{"length": "16"}, Distinct: true}, "hash needs a length of at least 24"},
@@ -664,7 +665,7 @@ func TestConfigureMistakes(t *testing.T) {
 		{"phone too long", column(tString(12)), Rule{Use: "phone"}, "phone writes up to 15 characters, and the column holds 12; set format: national (12 characters) or digits (10 characters)"},
 		{"phone shorter than every format", column(tString(9)), Rule{Use: "phone"}, "fewer than the 10 of its shortest format, digits; these fit: first_name, fpe, last_name, random_token, redact, synthesize_text"},
 		{"phone format in a number column", column(tInt64), Rule{Use: "phone", Options: map[string]any{"format": "national"}}, "option format: a number column always gets the digits"},
-		{"phone in int32", column(tInt32), Rule{Use: "phone"}, "don't always fit"},
+		{"phone in int32", column(tInt32), Rule{Use: "phone"}, "don't always fit a column of type int32"},
 		{"street in a number", column(tInt64), Rule{Use: "address", Options: map[string]any{"part": "street"}}, "only part: postcode"},
 		{"postcode max_length in a number", column(tInt64), Rule{Use: "address", Options: map[string]any{"part": "postcode", "max_length": "5"}}, "option max_length: a number column holds the postcode's 5 digits"},
 		{"state in one character", column(tString(1)), Rule{Use: "address", Options: map[string]any{"part": "state"}}, "the column holds 1, fewer than the 2 it needs at least"},
@@ -867,7 +868,7 @@ func TestKindErrors(t *testing.T) {
 		{"hash", column(tInt64)},
 	} {
 		_, err := newMasker(t, c.col, c.use, nil).mask(value.Bool(true))
-		if err == nil || !strings.Contains(err.Error(), "bool value") {
+		if err == nil || !strings.Contains(err.Error(), "a value of type bool") {
 			t.Errorf("%s on a bool: %v", c.use, err)
 		}
 	}

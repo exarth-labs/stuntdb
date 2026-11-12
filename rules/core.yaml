@@ -279,7 +279,7 @@ rules:
     class: direct
     use: redact
     confidence: 0.85
-    types: [string, text, opaque]
+    types: [string, text]
     names:
       - ip
       - ip address
@@ -482,7 +482,24 @@ rules:
     class: quasi
     use: noise
     confidence: 0.8
-    types: [float, decimal, string, text, opaque]
+    types: [float, decimal]
+    names:
+      - latitude
+      - longitude
+      - lat
+      - lng
+      - lon
+      - geolocation
+      - geo location
+      - coordinates
+      - gps
+
+  # The same names in text columns: noise masks numbers only.
+  - id: geolocation_text
+    class: quasi
+    use: redact
+    confidence: 0.8
+    types: [string, text]
     names:
       - latitude
       - longitude
@@ -577,7 +594,7 @@ rules:
     class: sensitive
     use: redact
     confidence: 0.75
-    types: [string, text, enum]
+    types: [string, text]
     names:
       - religion
       - ethnicity
