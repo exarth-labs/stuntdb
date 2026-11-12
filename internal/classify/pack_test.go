@@ -4,16 +4,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/exarth-labs/stuntdb/internal/mask"
+	"github.com/exarth-labs/stuntdb/internal/schema"
+	"github.com/exarth-labs/stuntdb/internal/value"
 	"github.com/exarth-labs/stuntdb/rules"
 )
-
-// plannedTransformers are the transformers planned for v0.1. Until the
-// transformer catalog exists, built-in rules may suggest only these.
-var plannedTransformers = []string{
-	"keep", "null", "constant", "default", "first_name", "last_name", "full_name",
-	"username", "email", "phone", "address", "company", "uuid", "random_token",
-	"password_hash", "redact", "noise", "date_shift", "synthesize_text", "hash",
-}
 
 func builtinRules(t *testing.T) []*rule {
 	t.Helper()
@@ -29,9 +24,6 @@ func TestBuiltinPacks(t *testing.T) {
 	counts := map[string]int{}
 	for _, r := range rs {
 		counts[strings.SplitN(r.id, ".", 2)[0]]++
-		if !contains(plannedTransformers, []string{r.use}) {
-			t.Errorf("%s suggests %s, which is not a planned transformer", r.id, r.use)
-		}
 		if strings.HasPrefix(r.id, "secrets.") && r.class != Secret {
 			t.Errorf("%s is in the secrets pack, but its class is %s", r.id, r.class)
 		}
@@ -39,6 +31,53 @@ func TestBuiltinPacks(t *testing.T) {
 	if counts["core"] == 0 || counts["secrets"] == 0 {
 		t.Errorf("rules per pack = %v", counts)
 	}
+}
+
+// TestBuiltinSuggestionsFit checks that the masking engine takes every
+// built-in suggestion, with its options, in every type its rule lists, so
+// that check never refuses a suggestion init wrote.
+func TestBuiltinSuggestionsFit(t *testing.T) {
+	pairs := 0
+	for _, r := range builtinRules(t) {
+		options := make(map[string]any, len(r.options))
+		for k, v := range r.options {
+			options[k] = v
+		}
+		for k := value.TypeKind(1); k.String() != value.TypeInvalid.String(); k++ {
+			if r.types&(1<<k) == 0 {
+				continue
+			}
+			pairs++
+			col := mask.Column{Ref: schema.ColumnRef{Column: "c"}, Type: sampleType(k), Nullable: true}
+			for _, distinct := range []bool{false, true} {
+				if _, err := mask.Configure(col, mask.Rule{Use: r.use, Options: options, Distinct: distinct}); err != nil {
+					t.Errorf("%s in a %s column (distinct: %t): %v", r.id, k, distinct, err)
+				}
+			}
+		}
+	}
+	if pairs == 0 {
+		t.Fatal("no rule lists a type")
+	}
+}
+
+// sampleType returns a type of a kind, without length limits.
+func sampleType(k value.TypeKind) value.Type {
+	switch k {
+	case value.TypeInt, value.TypeFloat:
+		return value.Type{Kind: k, Bits: 64}
+	case value.TypeDecimal:
+		return value.Type{Kind: k, Precision: 20}
+	case value.TypeTime, value.TypeTimestamp:
+		return value.Type{Kind: k, Precision: 6}
+	case value.TypeEnum:
+		return value.Type{Kind: k, Values: []string{"a", "b"}}
+	case value.TypeArray:
+		return value.Type{Kind: k, Elem: &value.Type{Kind: value.TypeText}}
+	case value.TypeOpaque:
+		return value.Type{Kind: k, Native: "point"}
+	}
+	return value.Type{Kind: k}
 }
 
 // TestBuiltinRulesAreUnambiguous checks that no name belongs to two rules

@@ -34,7 +34,7 @@ func digitsFit(what string, n int) func(Column) error {
 			fits = t.Precision == 0 || t.Precision-t.Scale >= n
 		}
 		if !fits {
-			return fmt.Errorf("%s have %d digits, which don't always fit a %s column", what, n, t)
+			return fmt.Errorf("%s have %d digits, which don't always fit a column of type %s", what, n, t)
 		}
 		return nil
 	}

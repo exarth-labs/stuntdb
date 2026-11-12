@@ -58,8 +58,8 @@ public.users.unconfirmed_email             direct        email                  
 public.users.otp_secret                    secret        random_token           0.90        rule secrets.secret
 public.users.otp_backup_codes              secret        random_token           0.90        rule secrets.token
 public.users.sign_in_count                 unclassified  -                      -           -
-public.users.current_sign_in_ip            direct        redact                 0.85        rule core.ip_address
-public.users.last_sign_in_ip               direct        redact                 0.85        rule core.ip_address
+public.users.current_sign_in_ip            unclassified  -                      -           -
+public.users.last_sign_in_ip               unclassified  -                      -           -
 public.users.created_at                    safe          keep                   0.90        rule core.record_timestamp
 public.users.updated_at                    safe          keep                   0.90        rule core.record_timestamp
 public.users.lock_version                  safe          keep                   0.90        rule core.lock_version
