@@ -135,6 +135,7 @@ func keepTransformer() *Transformer {
 		Name:    "keep",
 		Summary: "Copies the value unchanged.",
 		Types:   allTypes,
+		alike:   anyClass,
 		build: func(target, *Options) (*fn, error) {
 			return &fn{guarantee: Bijective, mask: func(_ *Context, in value.Value) (value.Value, error) { return in, nil }}, nil
 		},
@@ -146,6 +147,7 @@ func nullTransformer() *Transformer {
 		Name:    "null",
 		Summary: "Replaces every value with NULL.",
 		Types:   allTypes,
+		alike:   anyClass,
 		build: func(target, *Options) (*fn, error) {
 			return &fn{
 				mask: func(*Context, value.Value) (value.Value, error) { return value.Null(), nil },
@@ -200,6 +202,9 @@ func constantTransformer() *Transformer {
 			if err != nil {
 				return nil, fmt.Errorf("option value: %w", err)
 			}
+			// Compared as the value it gives, so that 5 and 05 are one
+			// integer, as 5.0 and 5.00 are one decimal.
+			o.resolve("value", string(appendCanonical(nil, v)))
 			return &fn{
 				mask: func(*Context, value.Value) (value.Value, error) { return v, nil },
 				fit: func(col Column) error {

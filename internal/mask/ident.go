@@ -25,6 +25,9 @@ func uuidTransformer() *Transformer {
 		Summary: "Another UUID, from a keyed permutation (NIST FF1) of the 122 bits that are not the version or " +
 			"the variant, so that distinct UUIDs stay distinct and keep their version. Text keeps its layout.",
 		Types: []value.TypeKind{value.TypeUUID, value.TypeString, value.TypeText, value.TypeBinary},
+		// One UUID gets one permutation, whether it is stored natively, as
+		// 16 bytes or as text: the output is written back the same way.
+		alike: func(value.Type) string { return "uuid" },
 		build: func(target, *Options) (*fn, error) {
 			return &fn{guarantee: Bijective, mask: maskUUID, fit: func(col Column) error {
 				switch room := maxLen(col); {
@@ -362,6 +365,7 @@ func randomTokenTransformer() *Transformer {
 			value.TypeString, value.TypeText, value.TypeBinary, value.TypeUUID, value.TypeJSON,
 			value.TypeInt, value.TypeDecimal,
 		},
+		alike: jsonApart, // JSON gets a new JSON string, text a token of its own shape
 		build: func(t target, _ *Options) (*fn, error) {
 			switch {
 			case t.kind == value.TypeUUID:

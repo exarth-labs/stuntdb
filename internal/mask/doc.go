@@ -10,7 +10,7 @@
 // HKDF-SHA256 derives separate subkeys from the masking key (see Keys). For
 // a seeded transformer, the seed of a value is
 //
-//	HMAC-SHA256(seed key, "stuntdb/mask/seed", generator version, domain, value)
+//	HMAC-SHA256(seed key, "stuntdb/mask/seed", generator version, domain, transformer, value)
 //
 // with every field length-prefixed, so that two different inputs never give
 // the same bytes. The value is encoded by family, not by column type: the
@@ -19,6 +19,18 @@
 // types differ. The seed starts a ChaCha8 stream (Rand), which picks from
 // versioned word lists. Transformers that must keep values distinct use a
 // keyed permutation instead (NIST FF1, see FF1).
+//
+// # Domains
+//
+// A domain is a set of columns that give equal values equal fake values,
+// such as a key and the foreign keys that reference it. ResolveDomains
+// checks the domains of a whole copy before anything is masked: the value
+// columns of a domain must use one transformer with the same options, in
+// column types it masks alike (Transformer.MasksAlike), and a domain that
+// holds a unique column makes all its value columns Distinct. Columns
+// seeded with per: are the parts of one entity instead: the columns with
+// the same per key, domain and transformer share their options, except
+// options for the part each column holds, such as address's part.
 //
 // # Uniqueness
 //

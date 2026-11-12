@@ -23,7 +23,7 @@ address part=street [text] "1 Real Street" -> "6105 Orchard St"
 address part=city [text] "Paris" -> "Kingston"
 address part=state [string(2)] "CA" -> "NJ"
 address part=postcode [text] "75001" -> "16664"
-address part=postcode [int32] 75001 -> 53029
+address part=postcode [int32] 75001 -> 65122
 uuid [uuid] "123e4567-e89b-42d3-a456-426614174000" -> "905645b5-b164-4e1d-8d6a-cd4ce676aee9"
 uuid [text] "123E4567E89B42D3A456426614174000" -> "905645B5B1644E1D8D6ACD4CE676AEE9"
 fpe [text] "ABC-123-xyz" -> "R5r-Svb-s1s"

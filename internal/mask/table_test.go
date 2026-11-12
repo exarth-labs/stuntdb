@@ -175,11 +175,12 @@ func TestPerGroupsAnEntity(t *testing.T) {
 			{Name: "street", Type: tText},
 			{Name: "city", Type: tText},
 			{Name: "first", Type: tText},
+			{Name: "zip", Type: tInt32},
 		},
 		PrimaryKey: &schema.Key{Columns: []schema.Ident{"id"}},
 	}
 	ref := schema.TableRef{Namespace: "main", Name: "people"}
-	tbl, err := NewTable(ref, people, map[schema.Ident]Rule{
+	rules := map[schema.Ident]Rule{
 		"id":      {Use: "keep"},
 		"born":    {Use: "date_shift", Per: "id"},
 		"hired":   {Use: "date_shift", Per: "id"},
@@ -187,17 +188,26 @@ func TestPerGroupsAnEntity(t *testing.T) {
 		"street":  {Use: "address", Options: map[string]any{"part": "street"}, Per: "id"},
 		"city":    {Use: "address", Options: map[string]any{"part": "city"}, Per: "id"},
 		"first":   {Use: "first_name", Per: "id"},
-	}, dialect.Capabilities{})
+		"zip":     {Use: "address", Options: map[string]any{"part": "postcode"}, Per: "id"},
+	}
+	var cols []ColumnRule
+	for _, c := range Describe(ref, people, dialect.Capabilities{}) {
+		cols = append(cols, ColumnRule{c, rules[c.Ref.Column]})
+	}
+	if _, err := ResolveDomains(cols); err != nil {
+		t.Fatalf("the parts of one entity are refused: %v", err)
+	}
+	tbl, err := NewTable(ref, people, rules, dialect.Capabilities{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	m := tbl.Bind(testKeys(t))
 	born, _ := value.Date(1990, 3, 15)
 	hired, _ := value.Date(2020, 1, 1)
-	out := make([]value.Value, 7)
+	out := make([]value.Value, 8)
 	shifts := map[int]bool{}
 	for id := range int64(40) {
-		in := []value.Value{value.Int(id), born, hired, value.String("x"), value.String("y"), value.String("z"), value.String("w")}
+		in := []value.Value{value.Int(id), born, hired, value.String("x"), value.String("y"), value.String("z"), value.String("w"), value.Int(75001)}
 		if err := m.Mask(out, in); err != nil {
 			t.Fatal(err)
 		}
@@ -206,9 +216,12 @@ func TestPerGroupsAnEntity(t *testing.T) {
 			t.Fatalf("id %d: the two dates moved by different amounts", id)
 		}
 		shifts[shift] = true
-		address, street, city := out[3].Text(), out[4].Text(), out[5].Text()
+		address, street, city, zip := out[3].Text(), out[4].Text(), out[5].Text(), out[7].Int()
 		if !strings.HasPrefix(address, street+", "+city+", ") {
 			t.Fatalf("id %d: the street and city columns don't belong to the address: %q, %q, %q", id, street, city, address)
+		}
+		if !strings.HasSuffix(address, " "+intText(zip)) {
+			t.Fatalf("id %d: the number column's postcode doesn't belong to the address", id)
 		}
 	}
 	if len(shifts) < 20 {
@@ -222,17 +235,8 @@ func daysBetween(a, b value.Value) int {
 	return int(dateOf(yb, int(mb), db).Sub(dateOf(ya, int(ma), da)).Hours() / 24)
 }
 
-func TestSameMasking(t *testing.T) {
-	a := Rule{Use: "noise", Options: map[string]any{"percent": "10"}, Domain: "x"}
-	b := Rule{Use: "noise", Options: map[string]any{"percent": jsonNumber("10")}, Domain: "y", Per: "id"}
-	if !SameMasking(a, b) {
-		t.Error("the text 10 and the number 10 differ")
-	}
-	if SameMasking(a, Rule{Use: "noise"}) || SameMasking(a, Rule{Use: "hash", Options: a.Options}) {
-		t.Error("different masking is the same")
-	}
-}
-
+// jsonNumber stands for json.Number, the type of numbers in options read
+// from YAML: a fmt.Stringer.
 type jsonNumber string
 
 func (n jsonNumber) String() string { return string(n) }
