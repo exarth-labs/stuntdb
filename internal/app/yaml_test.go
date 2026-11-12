@@ -61,3 +61,14 @@ func FuzzYAMLScalar(f *testing.F) {
 		}
 	})
 }
+
+// A whole number is written plainly; anything else that YAML would read
+// as a number, or that isn't a number, keeps its text.
+func TestOptionScalar(t *testing.T) {
+	tests := map[string]string{"6": "6", "30": "30", "06": `"06"`, "-1": `"-1"`, "1.5": `"1.5"`, "PK": "PK", "": `""`}
+	for in, want := range tests {
+		if got := optionScalar(in); got != want {
+			t.Errorf("optionScalar(%q) = %s, want %s", in, got, want)
+		}
+	}
+}

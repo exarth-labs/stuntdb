@@ -9,13 +9,17 @@ import (
 
 	"github.com/exarth-labs/stuntdb/internal/classify"
 	"github.com/exarth-labs/stuntdb/internal/config"
+	"github.com/exarth-labs/stuntdb/internal/mask"
 	"github.com/exarth-labs/stuntdb/internal/schema"
+	"github.com/exarth-labs/stuntdb/internal/value"
 )
 
-// The transformers that need no catalog: copy the value, or empty it.
+// The transformers that decide differently from the others: copy the value,
+// empty it, or leave the column to its database default.
 const (
-	useKeep = "keep"
-	useNull = "null"
+	useKeep    = "keep"
+	useNull    = "null"
+	useDefault = "default"
 )
 
 // Reason says why a column has its decision.
@@ -42,8 +46,32 @@ type Decision struct {
 	// or, while that column is unreviewed, the column it waits for.
 	Follows *schema.ColumnRef
 
+	// The rest of the rule, for a transformer: its options, its domain as
+	// written (empty means the column's default) and the column that seeds
+	// it. A foreign key takes its root's options, and the root's domain, so
+	// that both get the same fake values.
+	Options map[string]any
+	Domain  string
+	Per     schema.Ident
+
+	at       string // where the rule that decides it is written: its own, or a foreign key's root's; empty when no rule does
 	note     string // why a policy could not decide, for the problem message
 	reported bool   // a problem already explains why it is unreviewed
+	refused  bool   // its own rule is not allowed, so its masking is not checked further
+}
+
+// maskRule returns the decision as the masking engine takes it.
+func (dec *Decision) maskRule() mask.Rule {
+	return mask.Rule{Use: dec.Use, Options: dec.Options, Domain: dec.Domain, Per: dec.Per}
+}
+
+// domain returns the column's domain under its decision.
+func (dec *Decision) domain() string { return dec.maskRule().DomainFor(dec.Column) }
+
+// masked reports whether the decision masks the column with a transformer
+// that the masking engine checks.
+func (dec *Decision) masked() bool {
+	return dec.Use != config.Unreviewed && dec.Use != config.Generated && !dec.refused
 }
 
 // decider makes the decision for every column. Most columns are decided
@@ -57,6 +85,7 @@ type decider struct {
 	policy   config.Policy
 	columns  map[schema.ColumnRef]*schema.Column
 	parents  map[schema.ColumnRef][]schema.ColumnRef // the columns each column references
+	children map[schema.ColumnRef][]schema.ColumnRef // the columns that reference each column
 	byColumn map[schema.ColumnRef]*Decision
 	problems []Problem
 }
@@ -72,6 +101,7 @@ func decide(src *source, matches map[schema.ColumnRef]classify.Match, rules map[
 		policy:   policy,
 		columns:  map[schema.ColumnRef]*schema.Column{},
 		parents:  map[schema.ColumnRef][]schema.ColumnRef{},
+		children: map[schema.ColumnRef][]schema.ColumnRef{},
 		byColumn: map[schema.ColumnRef]*Decision{},
 	}
 	var order []schema.ColumnRef
@@ -97,7 +127,12 @@ func decide(src *source, matches map[schema.ColumnRef]classify.Match, rules map[
 		case d.followsOthers(dec.Column):
 			d.follow(dec)
 		case dec.Reason == Configured:
-			d.checkConfiguredReference(dec)
+			d.checkOwnRule(dec)
+		}
+	}
+	for _, dec := range decisions {
+		if dec.Per != "" && !dec.refused {
+			d.checkPer(dec)
 		}
 	}
 	return decisions, d.problems
@@ -139,6 +174,7 @@ func (d *decider) findParents(db *schema.Database) {
 					if col, ok := d.columns[parent]; ok && col.Generated == nil {
 						child := schema.ColumnRef{Table: table, Column: name}
 						d.parents[child] = append(d.parents[child], parent)
+						d.children[parent] = append(d.children[parent], child)
 					}
 				}
 			}
@@ -165,7 +201,8 @@ func (d *decider) own(ref schema.ColumnRef) *Decision {
 		}
 	case rule != nil:
 		dec.Use, dec.Source, dec.Reason = rule.Use, "config", Configured
-		d.checkUse(rule.At.String(), dec, col)
+		dec.Options, dec.Domain, dec.Per, dec.at = rule.Options, rule.Domain, schema.Ident(rule.Per), rule.At.String()
+		d.checkSecret(dec)
 	case d.followsOthers(ref):
 		// decided by follow
 	default:
@@ -198,18 +235,30 @@ func (d *decider) applyPolicy(dec *Decision, col *schema.Column) {
 		dec.Use, dec.Source, dec.Reason = useKeep, "masking.unclassified", Policy
 		if dec.Match.Class == classify.Secret {
 			dec.Use, dec.Source = dec.Match.Use, dec.Match.Source()+"; secrets are always replaced"
+			dec.Options = matchOptions(dec.Match)
 		}
 	}
 }
 
-// checkUse reports a transformer that cannot go in a column: keep on a
-// secret, or null in a NOT NULL column.
-func (d *decider) checkUse(at string, dec *Decision, col *schema.Column) {
-	if err := dec.Match.Allows(dec.Use); err != nil {
-		d.problem(at, "%s: %v", dec.Column, err)
+// matchOptions returns a rule pack's suggested options the way the masking
+// engine takes options from stuntdb.yaml.
+func matchOptions(m classify.Match) map[string]any {
+	if len(m.Options) == 0 {
+		return nil
 	}
-	if dec.Use == useNull && !col.Nullable {
-		d.problem(at, "%s is NOT NULL, so it cannot be null", dec.Column)
+	out := make(map[string]any, len(m.Options))
+	for k, v := range m.Options {
+		out[k] = v
+	}
+	return out
+}
+
+// checkSecret reports keep on a column that holds a secret: secrets are
+// always replaced. Whether a transformer fits the column is for the
+// masking engine (checkMasking).
+func (d *decider) checkSecret(dec *Decision) {
+	if err := dec.Match.Allows(dec.Use); err != nil {
+		d.problem(dec.at, "%s: %v", dec.Column, err)
 	}
 }
 
@@ -237,8 +286,9 @@ func (d *decider) roots(ref schema.ColumnRef) []schema.ColumnRef {
 	return out
 }
 
-// follow decides a foreign key without a rule: it is masked like the
-// columns it depends on, once all of them are decided and agree.
+// follow decides a foreign key without a rule: it takes the whole rule of
+// the columns it depends on (the transformer, its options and its domain),
+// once all of them are decided and agree, so that its values match theirs.
 func (d *decider) follow(dec *Decision) {
 	roots := d.roots(dec.Column)
 	if len(roots) == 0 {
@@ -254,28 +304,143 @@ func (d *decider) follow(dec *Decision) {
 			dec.Follows = &root.Column
 			return // waits for the root's review
 		}
-		if decided != nil && root.Use != decided.Use {
-			d.problem("", "%s references both %s (%s) and %s (%s), which are masked differently", dec.Column, decided.Column, decided.Use, root.Column, root.Use)
-			dec.reported = true
-			return
+		if decided != nil {
+			if why := disagree(decided, root, d.columns[dec.Column].Type.Kind); why != "" {
+				d.problem("", "%s references both %s and %s, %s", dec.Column, decided.Column, root.Column, why)
+				dec.reported = true
+				return
+			}
 		}
 		if decided == nil {
 			decided = root
 		}
 	}
 	dec.Use, dec.Source, dec.Reason, dec.Follows = decided.Use, "follows "+decided.Column.String(), Reference, &decided.Column
-	d.checkUse("", dec, d.columns[dec.Column])
+	dec.Options, dec.Domain, dec.at = decided.Options, decided.domain(), decided.at
 }
 
-// checkConfiguredReference reports a foreign key whose rule masks it unlike
-// the columns it references, which would break the reference.
-func (d *decider) checkConfiguredReference(dec *Decision) {
-	at := d.rules[dec.Column].At.String()
-	for _, r := range d.roots(dec.Column) {
-		if root := d.byColumn[r]; root.Use != config.Unreviewed && root.Use != dec.Use {
-			d.problem(at, "%s references %s, so it must be masked the same way (%s); remove its rule", dec.Column, root.Column, root.Use)
-		}
+// disagree says why one column can't hold the values of two columns it
+// references, or returns "" when they mask equal values alike.
+func disagree(a, b *Decision, kind value.TypeKind) string {
+	switch {
+	case a.Use != b.Use:
+		return fmt.Sprintf("which are masked differently (%s and %s)", a.Use, b.Use)
+	case !sameOptions(a, b, kind):
+		return fmt.Sprintf("which give %s different options, so it can't match both; give them the same options", a.Use)
+	case usesDomain(a.Use) && a.domain() != b.domain():
+		return fmt.Sprintf("which are in different domains (%s and %s), so it can't match both; give them one domain:", a.domain(), b.domain())
 	}
+	return ""
+}
+
+// sameOptions compares options after defaults, as domains do. Options
+// written alike are equal even when invalid, so the engine reports a bad
+// option once, at its rule.
+func sameOptions(a, b *Decision, kind value.TypeKind) bool {
+	if maps.Equal(optionTexts(a.Options), optionTexts(b.Options)) {
+		return true
+	}
+	t, ok := mask.Lookup(a.Use)
+	return ok && t.SameOptions(kind, a.Options, b.Options)
+}
+
+// usesDomain reports whether a transformer's outputs depend on the domain.
+// An unknown transformer is taken to: the masking engine reports it.
+func usesDomain(use string) bool {
+	t, ok := mask.Lookup(use)
+	return !ok || t.UsesDomain()
+}
+
+// optionTexts writes options as text, the way the lockfile records them.
+func optionTexts(options map[string]any) map[string]string {
+	if len(options) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(options))
+	for k, v := range options {
+		out[k] = config.OptionText(v)
+	}
+	return out
+}
+
+// checkOwnRule refuses a rule on a foreign key: a foreign key is masked
+// like the columns it references, so that its values still match theirs,
+// and one rule in one place can't drift. A cycle of foreign keys, where no
+// column has a root outside the cycle, is the exception: its first column
+// with a rule decides it, and the others follow that column.
+func (d *decider) checkOwnRule(dec *Decision) {
+	ref := dec.Column
+	if len(d.parents[ref]) == 0 {
+		return
+	}
+	roots := d.roots(ref)
+	if d.reaches(ref)[ref] && !slices.ContainsFunc(roots, func(r schema.ColumnRef) bool {
+		return d.rules[r] == nil || !d.reaches(r)[ref] || r.String() < ref.String()
+	}) {
+		return // the first column of its cycle with a rule
+	}
+	target := d.parents[ref][0]
+	if len(roots) > 0 {
+		target = roots[0]
+	}
+	d.problem(dec.at, "%s references %s, so it is masked like it and can't have a rule of its own; remove this rule, and to change how both are masked, %s",
+		ref, target, ruleAdvice(d.rules[target] != nil, target))
+	dec.refused = true
+}
+
+// reaches returns the columns a column references, directly or through
+// other foreign keys, whatever their rules. It holds the column itself when
+// the column is part of a cycle.
+func (d *decider) reaches(ref schema.ColumnRef) map[schema.ColumnRef]bool {
+	out := map[schema.ColumnRef]bool{}
+	queue := append([]schema.ColumnRef(nil), d.parents[ref]...)
+	for len(queue) > 0 {
+		next := queue[0]
+		queue = queue[1:]
+		if out[next] {
+			continue
+		}
+		out[next] = true
+		queue = append(queue, d.parents[next]...)
+	}
+	return out
+}
+
+// ruleAdvice tells the user where to change how a column is masked: its
+// rule in stuntdb.yaml, or a rule to write there.
+func ruleAdvice(hasRule bool, ref schema.ColumnRef) string {
+	if hasRule {
+		return "change the rule of " + ref.String()
+	}
+	return "write a rule for " + ref.String()
+}
+
+// checkPer reports a per: that can't seed the column: per names a column
+// the copy never reads, or the column is referenced by foreign keys, whose
+// rows don't hold the per column.
+func (d *decider) checkPer(dec *Decision) {
+	per := schema.ColumnRef{Table: dec.Column.Table, Column: dec.Per}
+	switch {
+	case per == dec.Column:
+		d.problem(dec.at, "%s: per names the column itself; it seeds a column from another column of its row", dec.Column)
+	case d.columns[per].Generated != nil:
+		d.problem(dec.at, "%s: per names %s, a generated column, which the copy never reads", dec.Column, per)
+	case d.byColumn[per].Use == useDefault:
+		d.problem(dec.at, "%s: per names %s, which is left to its default, so the copy never reads it", dec.Column, per)
+	}
+	if children := d.children[dec.Column]; len(children) > 0 {
+		d.problem(dec.at, "%s: foreign keys reference it (%s), and their rows don't hold its per column, so it can't use per",
+			dec.Column, refsText(children))
+	}
+}
+
+// refsText lists columns for a message.
+func refsText(refs []schema.ColumnRef) string {
+	names := make([]string, len(refs))
+	for i, r := range refs {
+		names[i] = r.String()
+	}
+	return strings.Join(names, ", ")
 }
 
 func (d *decider) problem(at, format string, args ...any) {
@@ -305,7 +470,7 @@ func ruleText(m classify.Match) string {
 	var b strings.Builder
 	b.WriteString("{ use: " + m.Use)
 	for _, k := range slices.Sorted(maps.Keys(m.Options)) {
-		b.WriteString(", " + yamlScalar(k) + ": " + yamlScalar(m.Options[k]))
+		b.WriteString(", " + yamlScalar(k) + ": " + optionScalar(m.Options[k]))
 	}
 	b.WriteString(" }")
 	return b.String()

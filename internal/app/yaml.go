@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -41,4 +42,14 @@ func yamlScalar(s string) string {
 // form "key: value".
 func shortKey(key string) bool {
 	return utf8.RuneCountInString(key) <= maxShortKey
+}
+
+// optionScalar writes an option's value: a whole number plainly, as people
+// write max_length: 30, and other text with yamlScalar. YAML reads the
+// number back as a number, which the masking engine takes the same way.
+func optionScalar(s string) string {
+	if n, err := strconv.Atoi(s); err == nil && n >= 0 && strconv.Itoa(n) == s {
+		return s
+	}
+	return yamlScalar(s)
 }

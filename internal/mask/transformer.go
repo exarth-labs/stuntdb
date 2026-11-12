@@ -132,6 +132,32 @@ type Transformer struct {
 	// one per group (the same per key, domain and transformer), because
 	// each column holds another part of one entity, such as address's part.
 	entityOptions []string
+
+	// readsText is set when the transformer masks text only in one format,
+	// such as ISO 8601 dates or UUIDs: it is never suggested for a text
+	// column without knowing what the column holds.
+	readsText bool
+
+	// domainFree is set when the outputs never depend on the domain: the
+	// transformer is neither seeded nor keyed by it.
+	domainFree bool
+}
+
+// UsesDomain reports whether the transformer's outputs depend on the
+// domain: seeded transformers draw from a seed that includes it, and keyed
+// permutations (uuid, fpe) take it as their tweak. Columns that must hold
+// equal values need one domain only under such a transformer; keep, for
+// one, copies the value whatever the domain.
+func (t *Transformer) UsesDomain() bool { return !t.domainFree }
+
+// SameOptions reports whether two sets of options build and are equal once
+// defaults are filled in, so { use: hash } equals { use: hash, length: 32 }.
+// Distinct is left out: it never changes which options are read
+// (TestDistinctReadsTheSameOptions).
+func (t *Transformer) SameOptions(kind value.TypeKind, a, b map[string]any) bool {
+	_, ra, errA := t.configure(kind, a, false)
+	_, rb, errB := t.configure(kind, b, false)
+	return errA == nil && errB == nil && maps.Equal(ra, rb)
 }
 
 // Accepts reports whether the transformer can mask a column of type t.
@@ -142,8 +168,17 @@ func (t *Transformer) Accepts(k value.TypeKind) bool { return slices.Contains(t.
 // share a domain. Values are never converted to find out: the text "00123"
 // and the number 123 may be different rows.
 func (t *Transformer) MasksAlike(a, b value.Type) bool {
-	return t.Accepts(a.Kind) && t.Accepts(b.Kind) && t.class(a) == t.class(b)
+	if !t.Accepts(a.Kind) || !t.Accepts(b.Kind) {
+		return false
+	}
+	c := t.class(a)
+	return c != noClass && c == t.class(b)
 }
+
+// noClass is the class of a transformer whose outputs don't come from the
+// value, so that equal values in two columns never stay equal: default,
+// which leaves each column to its own database default.
+const noClass = ""
 
 // class returns the class of a column type under the transformer.
 func (t *Transformer) class(typ value.Type) string {
@@ -204,6 +239,10 @@ func Configure(col Column, rule Rule) (Func, error) {
 	}
 	if f.fit != nil {
 		if err := f.fit(col); err != nil {
+			var short *TooShortError
+			if errors.As(err, &short) && short.others {
+				short.msg += fitAlternatives(col, rule.Distinct || col.Unique, t.Name)
+			}
 			return nil, err
 		}
 	}
@@ -226,25 +265,44 @@ func (t *Transformer) configure(kind value.TypeKind, options map[string]any, dis
 }
 
 // distinctAlternatives tells the user, for an error message, which other
-// transformers keep the values of a unique column distinct: those that
-// accept the column with their default options and promise it. It leaves
-// out keep, which masks nothing, and except, the transformer just refused.
+// transformers keep the values of a unique column distinct.
 func distinctAlternatives(col Column, except string) string {
-	var names []string
-	for _, t := range Catalog() {
-		if t.Name == except || t.Name == "keep" || !t.Accepts(col.Type.Kind) {
-			continue
-		}
-		f, _, err := t.configure(col.Type.Kind, nil, true)
-		if err != nil || f.guarantee == None || (f.fit != nil && f.fit(col) != nil) {
-			continue
-		}
-		names = append(names, t.Name)
-	}
+	names := alternatives(col, true, except)
 	if len(names) == 0 {
 		return fmt.Sprintf("; in a %s column, no transformer can, so keep the values or change the key", col.Type)
 	}
 	return "; these can: " + strings.Join(names, ", ")
+}
+
+// fitAlternatives tells the user, for an error message, which other
+// transformers fit a column that is too short for the one refused.
+func fitAlternatives(col Column, distinct bool, except string) string {
+	names := alternatives(col, distinct, except)
+	if len(names) == 0 {
+		return "; no other transformer fits the column"
+	}
+	return "; these fit: " + strings.Join(names, ", ")
+}
+
+// alternatives returns the transformers that can mask a column with their
+// default options: they take its type, fit it, and keep its values
+// distinct where the domain needs it. It leaves out except, the transformer
+// just refused, those that mask nothing (keep, null and default), and in a
+// text column, those that read text in one format only.
+func alternatives(col Column, distinct bool, except string) []string {
+	text := col.Type.Kind == value.TypeString || col.Type.Kind == value.TypeText
+	var names []string
+	for _, t := range Catalog() {
+		if t.Name == except || t.Name == "keep" || t.Name == "null" || t.Name == "default" || !t.Accepts(col.Type.Kind) || text && t.readsText {
+			continue
+		}
+		f, _, err := t.configure(col.Type.Kind, nil, distinct || col.Unique)
+		if err != nil || (col.Unique || distinct) && f.guarantee == None || (f.fit != nil && f.fit(col) != nil) {
+			continue
+		}
+		names = append(names, t.Name)
+	}
+	return names
 }
 
 // checked checks every output against the column, so that a value that

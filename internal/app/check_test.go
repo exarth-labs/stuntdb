@@ -227,12 +227,12 @@ func TestCheckFindsMistakes(t *testing.T) {
 		{
 			"null in a NOT NULL column",
 			"columns:\n  app.customers:\n    tier: null\n",
-			[]string{"stuntdb.yaml:6:5: APP.CUSTOMERS.TIER is NOT NULL, so it cannot be null"},
+			[]string{"stuntdb.yaml:6:5: APP.CUSTOMERS.TIER: null cannot go in a NOT NULL column"},
 		},
 		{
 			"a foreign key masked unlike what it references",
 			"columns:\n  app.customers:\n    email: email\n  app.orders:\n    billing_email: hash\n",
-			[]string{"stuntdb.yaml:8:5: APP.ORDERS.BILLING_EMAIL references APP.CUSTOMERS.EMAIL, so it must be masked the same way (email); remove its rule"},
+			[]string{"stuntdb.yaml:8:5: APP.ORDERS.BILLING_EMAIL references APP.CUSTOMERS.EMAIL, so it is masked like it and can't have a rule of its own; remove this rule, and to change how both are masked, change the rule of APP.CUSTOMERS.EMAIL"},
 		},
 		{
 			"columns without a decision",

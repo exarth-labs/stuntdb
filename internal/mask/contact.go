@@ -114,7 +114,7 @@ func phoneTransformer() *Transformer {
 				mask: func(c *Context, _ value.Value) (value.Value, error) {
 					return value.String(plan.texts(c.Rand)[format]), nil
 				},
-				fit: fitLength("phone", plan.widths[format], func(_ Column, room int) string {
+				fit: fitLength("phone", plan.widths[format], func(_ Column, room int) fix {
 					var shorter []string
 					for i := format + 1; i < len(phoneFormats); i++ {
 						if plan.widths[i] <= room {
@@ -122,9 +122,9 @@ func phoneTransformer() *Transformer {
 						}
 					}
 					if len(shorter) == 0 {
-						return fmt.Sprintf(", fewer than the %d of its shortest format, digits", plan.widths[len(phoneFormats)-1])
+						return fix{advice: fmt.Sprintf(", fewer than the %d of its shortest format, digits", plan.widths[len(phoneFormats)-1]), others: true}
 					}
-					return "; set format: " + strings.Join(shorter, " or ")
+					return fix{advice: "; set format: " + strings.Join(shorter, " or ")}
 				}),
 			}, nil
 		},

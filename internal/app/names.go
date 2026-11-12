@@ -42,6 +42,17 @@ func resolveRules(src *source, tables []*config.TableRules) (map[schema.ColumnRe
 				add(rule.At, "%s already has a rule, at %s", col, first.At)
 				continue
 			}
+			if rule.Per != "" {
+				// A copy, so that the configuration keeps what was written.
+				resolved := *rule
+				resolved.Per = ""
+				if per, err := findColumn(src.caps.ColumnNames, table, rule.Per); err != nil {
+					add(rule.At, "%s: per: %v", col, err)
+				} else {
+					resolved.Per = string(per)
+				}
+				rule = &resolved
+			}
 			rules[col] = rule
 		}
 	}

@@ -10,6 +10,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - `stuntdb init` connects to the source database, reads its structure (never its rows), and writes a starter `stuntdb.yaml`. It suggests a masking rule for each column that needs one, as a comment, so that nothing is used until someone reviews it. It never replaces an existing file.
 - `stuntdb check` decides how every column is masked and compares the decisions with `stuntdb.lock`. It fails with exit code 3 when a column has no decision, a rule is not allowed (`keep` on a secret, `null` in a `NOT NULL` column, a rule for a column that doesn't exist), or anything differs from the lockfile. `stuntdb check --update` writes the lockfile. Foreign keys are masked like the columns they reference. Both commands take `-c/--config` and `--json`.
+- `stuntdb check` runs every masking rule through the masking engine, without the masking key:
+  - unknown transformers (with a "did you mean"), bad options, column types a transformer doesn't take, weak transformers on unique columns, and columns too short for their values. A too-short column gets the exact `max_length` that fits every column of its domain, and when none fits, the transformers that do.
+  - A foreign key takes its parent's whole rule (the transformer, its options and its domain), so both get the same fake values. It can't have a rule of its own, and a column whose parents are masked differently, or in different domains, is refused. In a cycle of foreign keys, one column takes the rule.
+  - Domains are checked as a whole.
+  - `per: <column>` can be written in `stuntdb.yaml`.
+  - The lockfile records each column's options, domain and `per`, so a change to any of them shows up in review.
+  - `stuntdb init` writes the `max_length` that fits into a suggestion that would be too long for its column.
 - Column classification: built-in rule packs (`rules/core.yaml` for personal data, `rules/secrets.yaml` for passwords, keys and tokens) suggest what each column holds, and how to mask it, from its name and type alone. No data is read. Secrets are always replaced. `init` and `check` use it.
 - The configuration format, `stuntdb.yaml` version 1, with a JSON Schema (`schemas/stuntdb.schema.json`) for autocomplete and validation in editors. Every mistake is reported at once, with its line and column. Secrets come only from environment variables or a key file. The lockfile, `stuntdb.lock`, records the decision for every column.
 - Error messages and logs are redacted before they are shown: passwords, credentials in URLs and connection settings, and quoted values from database messages never reach the screen or a log.

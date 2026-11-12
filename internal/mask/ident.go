@@ -21,7 +21,8 @@ func tweak(label, domain string, extra []byte) []byte {
 
 func uuidTransformer() *Transformer {
 	return &Transformer{
-		Name: "uuid",
+		Name:      "uuid",
+		readsText: true, // UUIDs in text columns
 		Summary: "Another UUID, from a keyed permutation (NIST FF1) of the 122 bits that are not the version or " +
 			"the variant, so that distinct UUIDs stay distinct and keep their version. Text keeps its layout.",
 		Types: []value.TypeKind{value.TypeUUID, value.TypeString, value.TypeText, value.TypeBinary},
@@ -163,13 +164,24 @@ func fpeTransformer() *Transformer {
 			}
 			name := o.OneOf("alphabet", "alnum", "digits", "lower", "upper", "alnum")
 			alphabet := fpeAlphabets[name]
-			return &fn{guarantee: Bijective, mask: func(c *Context, in value.Value) (value.Value, error) {
-				if in.Kind() != value.KindString {
-					return value.Value{}, errKind("fpe", in)
-				}
-				s, err := fpeText(c, name, alphabet, in.Text())
-				return value.String(s), err
-			}}, nil
+			least := ff1MinLength(len(alphabet))
+			return &fn{
+				guarantee: Bijective,
+				mask: func(c *Context, in value.Value) (value.Value, error) {
+					if in.Kind() != value.KindString {
+						return value.Value{}, errKind("fpe", in)
+					}
+					s, err := fpeText(c, name, alphabet, in.Text())
+					return value.String(s), err
+				},
+				// A column shorter than that refuses every value at run time.
+				fit: func(col Column) error {
+					if room := maxLen(col); room > 0 && room < least {
+						return fmt.Errorf("fpe needs at least %d characters from its alphabet (%s) in each value, and the column holds %d", least, name, room)
+					}
+					return nil
+				},
+			}, nil
 		},
 	}
 }
@@ -312,11 +324,11 @@ func hashTransformer() *Transformer {
 					seed := c.Rand.Seed()
 					return value.String(hex.EncodeToString(seed[:])[:n]), nil
 				},
-				fit: fitLength("hash", n, func(col Column, room int) string {
+				fit: fitLength("hash", n, func(_ Column, room int) fix {
 					if t.distinct && room < distinctHashLen {
-						return fmt.Sprintf(", fewer than the %d that keep values distinct%s", distinctHashLen, distinctAlternatives(col, "hash"))
+						return fix{advice: fmt.Sprintf(", fewer than the %d that keep values distinct", distinctHashLen), others: true}
 					}
-					return fmt.Sprintf("; set length: %d", room)
+					return setOption("length", room)
 				}),
 			}, nil
 		},
@@ -385,11 +397,33 @@ func randomTokenTransformer() *Transformer {
 			if t.distinct {
 				g = CollisionResistant
 			}
-			return &fn{guarantee: g, seeded: true, mask: func(c *Context, in value.Value) (value.Value, error) {
-				return randomToken(c.Rand, in, t.distinct)
-			}}, nil
+			return &fn{
+				guarantee: g,
+				seeded:    true,
+				mask: func(c *Context, in value.Value) (value.Value, error) {
+					return randomToken(c.Rand, in, t.distinct)
+				},
+				// Where values must stay distinct, a column too short for 96
+				// random bits refuses every value at run time.
+				fit: func(col Column) error {
+					if room := maxLen(col); t.distinct && room > 0 && room < tokenRoom(col) {
+						return fmt.Errorf("values here must stay distinct, so each token needs at least %d random bits: at least %d %s, and the column holds %d", collisionBits, tokenRoom(col), unit(col), room)
+					}
+					return nil
+				},
+			}, nil
 		},
 	}
+}
+
+// tokenRoom is the fewest characters (or bytes) of a column whose tokens
+// can carry collisionBits random bits: 8 bits a byte, and at most log2(26)
+// a character, as letters carry the most (see tokenBits).
+func tokenRoom(col Column) int {
+	if col.Type.Kind == value.TypeBinary {
+		return collisionBits / 8
+	}
+	return int(math.Ceil(collisionBits / math.Log2(26)))
 }
 
 var errTokenTooShort = fmt.Errorf("the token is too short to stay distinct (it needs at least %d random bits); use hash", collisionBits)

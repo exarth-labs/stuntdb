@@ -81,16 +81,55 @@ func unit(col Column) string {
 	return "characters"
 }
 
+// A TooShortError refuses a column that can't hold every output of a rule.
+// Values are never cut to fit: two distinct values could become equal.
+//
+// When an option bounds the outputs, Option names it and Fits is its
+// largest value that fits the column. The columns of a domain share their
+// options, so the smallest Fits among them fits them all.
+type TooShortError struct {
+	Option string // max_length or length; empty when no option can make the outputs fit
+	Fits   int
+
+	msg string
+
+	// others asks Configure to name the transformers that fit the column,
+	// when no option of this one can.
+	others bool
+}
+
+func (e *TooShortError) Error() string { return e.msg }
+
+// fix is what to change when a column is too short for a function's
+// outputs.
+type fix struct {
+	option string // the option that bounds the outputs, or empty
+	fits   int    // its value that fits the column
+	advice string // appended to the message
+	others bool   // name the transformers that fit instead
+}
+
+// setOption is the fix of an option that bounds the outputs.
+func setOption(name string, fits int) fix {
+	return fix{option: name, fits: fits, advice: fmt.Sprintf("; set %s: %d", name, fits)}
+}
+
 // fitLength returns the fit check of a function whose outputs have at most
 // longest characters. advice says what to change when the column holds
 // only room characters.
-func fitLength(name string, longest int, advice func(col Column, room int) string) func(Column) error {
+func fitLength(name string, longest int, advice func(col Column, room int) fix) func(Column) error {
 	return func(col Column) error {
 		room := maxLen(col)
 		if room == 0 || longest <= room {
 			return nil
 		}
-		return fmt.Errorf("%s writes up to %d %s, and the column holds %d%s", name, longest, unit(col), room, advice(col, room))
+		f := advice(col, room)
+		return &TooShortError{
+			Option: f.option,
+			Fits:   f.fits,
+			msg:    fmt.Sprintf("%s writes up to %d %s, and the column holds %d%s", name, longest, unit(col), room, f.advice),
+			others: f.others,
+		}
 	}
 }
 
@@ -103,12 +142,12 @@ func readMaxLength(o *Options, least int) int { return o.Int("max_length", 0, le
 
 // maxLengthAdvice is the advice of a transformer that takes max_length and
 // needs at least least characters.
-func maxLengthAdvice(least int) func(Column, int) string {
-	return func(_ Column, room int) string {
+func maxLengthAdvice(least int) func(Column, int) fix {
+	return func(_ Column, room int) fix {
 		if room >= least {
-			return fmt.Sprintf("; set max_length: %d", room)
+			return setOption("max_length", room)
 		}
-		return fmt.Sprintf(", fewer than the %d it needs at least", least)
+		return fix{advice: fmt.Sprintf(", fewer than the %d it needs at least", least), others: true}
 	}
 }
 
@@ -132,10 +171,11 @@ func asText(t target, s string) value.Value {
 
 func keepTransformer() *Transformer {
 	return &Transformer{
-		Name:    "keep",
-		Summary: "Copies the value unchanged.",
-		Types:   allTypes,
-		alike:   anyClass,
+		Name:       "keep",
+		domainFree: true,
+		Summary:    "Copies the value unchanged.",
+		Types:      allTypes,
+		alike:      anyClass,
 		build: func(target, *Options) (*fn, error) {
 			return &fn{guarantee: Bijective, mask: func(_ *Context, in value.Value) (value.Value, error) { return in, nil }}, nil
 		},
@@ -144,10 +184,11 @@ func keepTransformer() *Transformer {
 
 func nullTransformer() *Transformer {
 	return &Transformer{
-		Name:    "null",
-		Summary: "Replaces every value with NULL.",
-		Types:   allTypes,
-		alike:   anyClass,
+		Name:       "null",
+		domainFree: true,
+		Summary:    "Replaces every value with NULL.",
+		Types:      allTypes,
+		alike:      anyClass,
 		build: func(target, *Options) (*fn, error) {
 			return &fn{
 				mask: func(*Context, value.Value) (value.Value, error) { return value.Null(), nil },
@@ -164,9 +205,11 @@ func nullTransformer() *Transformer {
 
 func defaultTransformer() *Transformer {
 	return &Transformer{
-		Name:    "default",
-		Summary: "Leaves the column out, so that the target database fills it with the column's default.",
-		Types:   allTypes,
+		Name:       "default",
+		domainFree: true,
+		Summary:    "Leaves the column out, so that the target database fills it with the column's default.",
+		Types:      allTypes,
+		alike:      func(value.Type) string { return noClass }, // each column gets its own default
 		build: func(target, *Options) (*fn, error) {
 			return &fn{
 				omit: true,
@@ -186,8 +229,9 @@ func defaultTransformer() *Transformer {
 
 func constantTransformer() *Transformer {
 	return &Transformer{
-		Name:    "constant",
-		Summary: "Replaces every value with one fixed value, given by the option value.",
+		Name:       "constant",
+		domainFree: true,
+		Summary:    "Replaces every value with one fixed value, given by the option value.",
 		Types: []value.TypeKind{
 			value.TypeBool, value.TypeInt, value.TypeFloat, value.TypeDecimal, value.TypeString, value.TypeText,
 			value.TypeEnum, value.TypeJSON, value.TypeUUID, value.TypeDate, value.TypeTime, value.TypeTimestamp,

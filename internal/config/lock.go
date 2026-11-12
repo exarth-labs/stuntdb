@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -53,12 +54,22 @@ type LockTable struct {
 	Columns []*LockColumn
 }
 
-// LockColumn is the decision for one column.
+// LockColumn is the decision for one column. Everything that decides the
+// fake values is recorded, so that a change to any of it is a diff.
 type LockColumn struct {
 	Column   string
-	Decision string   // keep, null, a transformer name, Generated or Unreviewed
-	Source   string   // why: "config", "rule core.email", …; empty for Generated and Unreviewed
-	At       Position // where it is in the file, when read
+	Decision string            // keep, null, a transformer name, Generated or Unreviewed
+	Source   string            // why: "config", "rule core.email", …; empty for Generated and Unreviewed
+	Options  map[string]string // the transformer's options, as text (OptionText)
+	Domain   string            // the domain, when it isn't the column's own default
+	Per      string            // the column that seeds this one, if any
+	At       Position          // where it is in the file, when read
+}
+
+// SameRule reports whether two decisions mask a column the same way: the
+// same decision, source, options, domain and seed column.
+func (c *LockColumn) SameRule(o *LockColumn) bool {
+	return c.Decision == o.Decision && c.Source == o.Source && maps.Equal(c.Options, o.Options) && c.Domain == o.Domain && c.Per == o.Per
 }
 
 // Column returns the decision for a column, or nil.
@@ -93,6 +104,20 @@ func (l *Lock) Marshal() ([]byte, error) {
 			add(decision, "decision", text(c.Decision))
 			if c.Source != "" {
 				add(decision, "source", text(c.Source))
+			}
+			if len(c.Options) > 0 {
+				options := mapping()
+				options.Style = yaml.FlowStyle
+				for _, k := range slices.Sorted(maps.Keys(c.Options)) {
+					add(options, k, text(c.Options[k]))
+				}
+				add(decision, "options", options)
+			}
+			if c.Domain != "" {
+				add(decision, "domain", text(c.Domain))
+			}
+			if c.Per != "" {
+				add(decision, "per", text(c.Per))
 			}
 			add(rules, c.Column, decision)
 		}
@@ -239,6 +264,12 @@ func (f *file) lockTables(n *yaml.Node, ps *problems) []*LockTable {
 					c.Decision = f.str(cv.Content[m+1], ps)
 				case "source":
 					c.Source = f.str(cv.Content[m+1], ps)
+				case "options":
+					c.Options = f.lockOptions(cv.Content[m+1], ps)
+				case "domain":
+					c.Domain = f.str(cv.Content[m+1], ps)
+				case "per":
+					c.Per = f.str(cv.Content[m+1], ps)
 				default:
 					ps.add(f.pos(cv.Content[m]), "unknown entry %s", strconv.Quote(key))
 				}
@@ -251,6 +282,19 @@ func (f *file) lockTables(n *yaml.Node, ps *problems) []*LockTable {
 		tables = append(tables, t)
 	}
 	return tables
+}
+
+// lockOptions reads a decision's options: a set of names and single values.
+func (f *file) lockOptions(n *yaml.Node, ps *problems) map[string]string {
+	if n.Kind != yaml.MappingNode {
+		ps.add(f.pos(n), "options must be a set of names and values")
+		return nil
+	}
+	out := make(map[string]string, len(n.Content)/2)
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		out[n.Content[i].Value] = f.str(n.Content[i+1], ps)
+	}
+	return out
 }
 
 func (f *file) str(n *yaml.Node, ps *problems) string {

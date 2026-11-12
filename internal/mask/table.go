@@ -45,8 +45,9 @@ type Rule struct {
 // DefaultDomain is a column's domain when its rule names none.
 func DefaultDomain(ref schema.ColumnRef) string { return ref.String() }
 
-// domain returns the rule's domain for a column.
-func (r Rule) domain(ref schema.ColumnRef) string {
+// DomainFor returns the domain of a column under the rule: Domain when it
+// is set, else the Per column's default domain, else the column's own.
+func (r Rule) DomainFor(ref schema.ColumnRef) string {
 	switch {
 	case r.Domain != "":
 		return r.Domain
@@ -152,7 +153,7 @@ func NewTable(ref schema.TableRef, t *schema.Table, rules map[schema.Ident]Rule,
 		}
 		position[col.Ref.Column] = len(tbl.columns)
 		tbl.columns = append(tbl.columns, col.Ref.Column)
-		tbl.plans = append(tbl.plans, plan{ref: col.Ref, use: rule.Use, fn: f, domain: rule.domain(col.Ref)})
+		tbl.plans = append(tbl.plans, plan{ref: col.Ref, use: rule.Use, fn: f, domain: rule.DomainFor(col.Ref)})
 		pers = append(pers, rule.Per)
 	}
 	for i, per := range pers {

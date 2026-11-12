@@ -100,8 +100,28 @@ type ColumnRule struct {
 	Column  string
 	At      Position
 	Use     string         // keep, null, or a transformer name
-	Domain  string         // empty means namespace.table.column
+	Domain  string         // empty means namespace.table.column, or with Per, the Per column's
+	Per     string         // seed from this column of the row, as written; empty means the column's own value
 	Options map[string]any // the transformer's own options, as written
+}
+
+// OptionText writes an option's value as text, the way the masking engine
+// reads it: YAML text as it is, a number as its digits, true or false. It
+// is how the lockfile records options. A value that is not a single value
+// is written as Go prints it; the masking engine refuses it anyway.
+func OptionText(v any) string {
+	switch v := v.(type) {
+	case string:
+		return v
+	case fmt.Stringer: // json.Number
+		return v.String()
+	case bool:
+		return strconv.FormatBool(v)
+	case nil:
+		return ""
+	default:
+		return fmt.Sprint(v)
+	}
 }
 
 // Setting is a text setting that may come from an environment variable.

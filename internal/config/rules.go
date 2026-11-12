@@ -36,7 +36,7 @@ func (f *file) columns() ([]*TableRules, error) {
 }
 
 // rule reads one column's rule: a transformer name, or an object with use:,
-// an optional domain:, and the transformer's own options.
+// an optional domain: and per:, and the transformer's own options.
 func (f *file) rule(key, v *yaml.Node) *ColumnRule {
 	r := &ColumnRule{Column: key.Value, At: f.pos(key)}
 	if v.Kind == yaml.ScalarNode {
@@ -50,6 +50,8 @@ func (f *file) rule(key, v *yaml.Node) *ColumnRule {
 			r.Use = val.Value
 		case "domain":
 			r.Domain = val.Value
+		case "per":
+			r.Per = val.Value
 		default:
 			if r.Options == nil {
 				r.Options = map[string]any{}
