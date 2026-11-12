@@ -20,10 +20,7 @@ func passwordHashTransformer() *Transformer {
 		Types:   []value.TypeKind{value.TypeString, value.TypeText, value.TypeBinary},
 		Options: []string{"hash"},
 		build: func(t target, o *Options) (*fn, error) {
-			hash, ok := o.Text("hash")
-			if !ok {
-				hash = DefaultPasswordHash
-			}
+			hash := o.textOr("hash", DefaultPasswordHash)
 			if hash == "" {
 				return nil, errors.New("option hash: must not be empty")
 			}
@@ -41,6 +38,16 @@ func passwordHashTransformer() *Transformer {
 	}
 }
 
+// jsonApart is the class function of a transformer that writes a JSON
+// column differently from a text column: JSON is a class of its own, and
+// other types have their family's class.
+func jsonApart(typ value.Type) string {
+	if typ.Kind == value.TypeJSON {
+		return "json"
+	}
+	return familyClass(typ)
+}
+
 // redaction is what redact writes.
 const redaction = "REDACTED"
 
@@ -51,6 +58,7 @@ func redactTransformer() *Transformer {
 			"\"REDACTED\" in JSON columns, or those bytes in binary columns.",
 		Types:   []value.TypeKind{value.TypeString, value.TypeText, value.TypeJSON, value.TypeBinary},
 		Options: []string{"max_length"},
+		alike:   jsonApart, // JSON gets the JSON string "REDACTED", text the bare word
 		build: func(t target, o *Options) (*fn, error) {
 			if t.kind == value.TypeJSON {
 				o.refuse("max_length", "a JSON column always gets the JSON string \"REDACTED\"")

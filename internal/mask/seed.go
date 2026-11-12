@@ -150,6 +150,43 @@ func appendCanonical(dst []byte, v value.Value) []byte {
 	}
 }
 
+// typeFamily returns the family tag of the values a column of type kind k
+// normally holds: the tag appendCanonical starts them with.
+func typeFamily(k value.TypeKind) byte {
+	return kindFamily(value.Type{Kind: k}.NaturalKind())
+}
+
+// kindFamily returns the family tag appendCanonical gives a normal value of
+// kind k, or 0 for NULL. A test checks that the two agree.
+func kindFamily(k value.Kind) byte {
+	switch k {
+	case value.KindInt, value.KindUint, value.KindDecimal:
+		return famNumber
+	case value.KindFloat:
+		return famFloat
+	case value.KindString:
+		return famText
+	case value.KindBytes:
+		return famBytes
+	case value.KindUUID:
+		return famUUID
+	case value.KindBool:
+		return famBool
+	case value.KindDate:
+		return famDate
+	case value.KindTime:
+		return famTime
+	case value.KindTimestamp:
+		return famTimestamp
+	case value.KindInterval:
+		return famInterval
+	case value.KindArray:
+		return famArray
+	default:
+		return 0
+	}
+}
+
 func appendNumber(dst []byte, text string) []byte {
 	return appendField(append(dst, famNumber), []byte(text))
 }

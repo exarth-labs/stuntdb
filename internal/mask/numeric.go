@@ -4,6 +4,7 @@ import (
 	"errors"
 	"math"
 	"math/big"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,6 +23,7 @@ func noiseTransformer() *Transformer {
 			"a decimal keeps its decimal places and its number of whole digits, computed exactly.",
 		Types:   []value.TypeKind{value.TypeInt, value.TypeFloat, value.TypeDecimal},
 		Options: []string{"percent"},
+		alike:   noiseClass,
 		build: func(_ target, o *Options) (*fn, error) {
 			percent := o.Int("percent", 10, 1, 100)
 			return &fn{seeded: true, mask: func(c *Context, in value.Value) (value.Value, error) {
@@ -36,6 +38,18 @@ func noiseTransformer() *Transformer {
 			}}, nil
 		},
 	}
+}
+
+// noiseClass is noise's class of a column type. noise keeps an integer
+// within the integer types it fits, and a decimal within its whole digits
+// and decimal places, so equal values come out alike only in columns of
+// one kind, and for decimals, of one scale: 500 noised by 1.23% is 506 as
+// an integer, 506.15 in a decimal(12,2) column.
+func noiseClass(typ value.Type) string {
+	if typ.Kind == value.TypeDecimal {
+		return "decimal scale " + strconv.Itoa(typ.Scale)
+	}
+	return typ.Kind.String()
 }
 
 // noisy multiplies a number by factor, which is from 0 to 2, and keeps the

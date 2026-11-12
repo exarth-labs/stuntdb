@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"maps"
 	"slices"
-	"strings"
 
 	"github.com/exarth-labs/stuntdb/dialect"
 	"github.com/exarth-labs/stuntdb/internal/schema"
@@ -37,9 +36,9 @@ type Rule struct {
 	// Distinct is true when the rule's domain holds a column of a unique
 	// key. Every column of the domain then uses the forms that keep values
 	// distinct, such as email's tagged addresses, so that a foreign key
-	// gets the same values as the key it references. The planner sets it
-	// alike for every column of a domain; a unique column is distinct
-	// either way.
+	// gets the same values as the key it references. ResolveDomains sets
+	// it alike for every value column of a domain, and never for a Per
+	// column; a unique column is distinct either way.
 	Distinct bool
 }
 
@@ -56,24 +55,6 @@ func (r Rule) domain(ref schema.ColumnRef) string {
 	default:
 		return DefaultDomain(ref)
 	}
-}
-
-// SameMasking reports whether two rules mask equal values the same way: the
-// same transformer with the same options. Columns that share a domain must
-// use the same masking, or equal inputs could get different outputs.
-func SameMasking(a, b Rule) bool {
-	return a.Use == b.Use && optionsKey(a.Options) == optionsKey(b.Options)
-}
-
-// optionsKey writes options in a canonical form: sorted, every value as
-// text, so that the number 10 from YAML equals the text "10" from a rule
-// pack.
-func optionsKey(o map[string]any) string {
-	var b strings.Builder
-	for _, k := range slices.Sorted(maps.Keys(o)) {
-		fmt.Fprintf(&b, "%q=%q;", k, fmt.Sprint(o[k]))
-	}
-	return b.String()
 }
 
 // Describe returns the masking description of every column of a table, in

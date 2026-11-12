@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/exarth-labs/stuntdb/internal/schema"
@@ -120,10 +121,54 @@ type Transformer struct {
 
 	// build decides the masking function from the options and the target.
 	build func(t target, o *Options) (*fn, error)
+
+	// alike names the class of a column type: the transformer masks equal
+	// values alike in columns whose types have one class, so that those
+	// columns can share a domain. nil means familyClass, the seed's value
+	// family; a transformer sets it when its outputs follow other lines.
+	alike func(value.Type) string
+
+	// entityOptions are the options that may differ between the columns of
+	// one per group (the same per key, domain and transformer), because
+	// each column holds another part of one entity, such as address's part.
+	entityOptions []string
 }
 
 // Accepts reports whether the transformer can mask a column of type t.
 func (t *Transformer) Accepts(k value.TypeKind) bool { return slices.Contains(t.Types, k) }
+
+// MasksAlike reports whether the transformer accepts columns of types a and
+// b, and gives equal values in them equal outputs: whether such columns can
+// share a domain. Values are never converted to find out: the text "00123"
+// and the number 123 may be different rows.
+func (t *Transformer) MasksAlike(a, b value.Type) bool {
+	return t.Accepts(a.Kind) && t.Accepts(b.Kind) && t.class(a) == t.class(b)
+}
+
+// class returns the class of a column type under the transformer.
+func (t *Transformer) class(typ value.Type) string {
+	if t.alike != nil {
+		return t.alike(typ)
+	}
+	return familyClass(typ)
+}
+
+// familyClass is the class of a column type for most transformers: the
+// family its values are seeded in (see appendCanonical), so that the
+// integer 5 and the decimal 5.00 are alike, and the number 5 and the text
+// "5" are not. Times and timestamps with a time zone are a class of their
+// own: the seed reads them as instants, the others as wall-clock times.
+func familyClass(typ value.Type) string {
+	c := "family " + strconv.Itoa(int(typeFamily(typ.Kind)))
+	if typ.TZ && (typ.Kind == value.TypeTime || typ.Kind == value.TypeTimestamp) {
+		c += " with time zone"
+	}
+	return c
+}
+
+// anyClass is the class function of a transformer that masks every type
+// alike: equal values always give equal outputs.
+func anyClass(value.Type) string { return "any" }
 
 // Configure returns the masking function of a column under a rule. It checks
 // the transformer, its options, whether the column can hold every output,
@@ -142,7 +187,7 @@ func Configure(col Column, rule Rule) (Func, error) {
 	if !t.Accepts(col.Type.Kind) {
 		return nil, fmt.Errorf("%s cannot mask a %s column; it masks %s", t.Name, col.Type, typeList(t.Types))
 	}
-	f, err := t.configure(col.Type.Kind, rule.Options, rule.Distinct || col.Unique)
+	f, _, err := t.configure(col.Type.Kind, rule.Options, rule.Distinct || col.Unique)
 	if err != nil {
 		return nil, err
 	}
@@ -166,17 +211,18 @@ func Configure(col Column, rule Rule) (Func, error) {
 }
 
 // configure builds the masking function for a column kind, and reports the
-// mistakes in the options together.
-func (t *Transformer) configure(kind value.TypeKind, options map[string]any, distinct bool) (*fn, error) {
+// mistakes in the options together. It also returns the options the build
+// used, with their defaults filled in (see Options.resolve).
+func (t *Transformer) configure(kind value.TypeKind, options map[string]any, distinct bool) (*fn, map[string]string, error) {
 	if kind == value.TypeString {
 		kind = value.TypeText
 	}
 	o := newOptions(t, options)
 	f, err := t.build(target{kind: kind, distinct: distinct}, o)
 	if err := errors.Join(err, o.err()); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return f, nil
+	return f, o.resolved, nil
 }
 
 // distinctAlternatives tells the user, for an error message, which other
@@ -189,7 +235,7 @@ func distinctAlternatives(col Column, except string) string {
 		if t.Name == except || t.Name == "keep" || !t.Accepts(col.Type.Kind) {
 			continue
 		}
-		f, err := t.configure(col.Type.Kind, nil, true)
+		f, _, err := t.configure(col.Type.Kind, nil, true)
 		if err != nil || f.guarantee == None || (f.fit != nil && f.fit(col) != nil) {
 			continue
 		}
@@ -262,11 +308,21 @@ type Options struct {
 	raw  map[string]any
 	used map[string]bool
 	errs []error
+
+	// resolved holds every option the build read, with the value it used
+	// in a canonical form: the default when the option is not set. Columns
+	// of one domain compare these, so that { use: hash } equals
+	// { use: hash, length: 32 }. They are compared, never shown.
+	resolved map[string]string
 }
 
 func newOptions(t *Transformer, raw map[string]any) *Options {
-	return &Options{t: t, raw: raw, used: map[string]bool{}}
+	return &Options{t: t, raw: raw, used: map[string]bool{}, resolved: map[string]string{}}
 }
+
+// resolve records the value a build uses for an option, in a canonical
+// form.
+func (o *Options) resolve(name, canonical string) { o.resolved[name] = canonical }
 
 func (o *Options) fail(name, format string, args ...any) {
 	o.errs = append(o.errs, fmt.Errorf("option %s: %s", name, fmt.Sprintf(format, args...)))
@@ -313,15 +369,15 @@ func (o *Options) text(name string) (string, bool) {
 
 // Int returns a whole-number option from lo to hi, or def when it is not set.
 func (o *Options) Int(name string, def, lo, hi int) int {
-	s, ok := o.text(name)
-	if !ok {
-		return def
+	n := def
+	if s, ok := o.text(name); ok {
+		if v, err := parseInt(s); err != nil || v < lo || v > hi {
+			o.fail(name, "must be a whole number from %d to %d", lo, hi)
+		} else {
+			n = v
+		}
 	}
-	n, err := parseInt(s)
-	if err != nil || n < lo || n > hi {
-		o.fail(name, "must be a whole number from %d to %d", lo, hi)
-		return def
-	}
+	o.resolve(name, strconv.Itoa(n))
 	return n
 }
 
@@ -329,18 +385,35 @@ func (o *Options) Int(name string, def, lo, hi int) int {
 // when it is not set.
 func (o *Options) OneOf(name, def string, allowed ...string) string {
 	s, ok := o.text(name)
-	if !ok {
-		return def
-	}
-	if !slices.Contains(allowed, s) {
+	switch {
+	case !ok:
+		s = def
+	case !slices.Contains(allowed, s):
 		o.fail(name, "must be one of: %s", strings.Join(allowed, ", "))
-		return def
+		s = def
 	}
+	o.resolve(name, s)
 	return s
 }
 
 // Text returns a text option, and whether it is set.
-func (o *Options) Text(name string) (string, bool) { return o.text(name) }
+func (o *Options) Text(name string) (string, bool) {
+	s, ok := o.text(name)
+	if ok {
+		o.resolve(name, s)
+	}
+	return s, ok
+}
+
+// textOr returns a text option, or def when it is not set.
+func (o *Options) textOr(name, def string) string {
+	s, ok := o.text(name)
+	if !ok {
+		s = def
+	}
+	o.resolve(name, s)
+	return s
+}
 
 // refuse reports an option that the transformer takes, but not for this
 // column, when it is set.

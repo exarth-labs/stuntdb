@@ -159,6 +159,9 @@ func addressTransformer() *Transformer {
 			"Columns with the same per: <key column> describe one address per key. max_length bounds the text.",
 		Types:   append(append([]value.TypeKind{}, textTypes...), numberTypes...),
 		Options: []string{"part", "max_length"},
+		// The columns of one address take different parts, cut to their
+		// own lengths, from the same draws.
+		entityOptions: []string{"part", "max_length"},
 		build: func(t target, o *Options) (*fn, error) {
 			part := o.OneOf("part", "full", addressParts...)
 			if isNumber(t) {
@@ -169,7 +172,7 @@ func addressTransformer() *Transformer {
 				return &fn{
 					seeded: true,
 					mask: func(c *Context, _ value.Value) (value.Value, error) {
-						return numberOf(t, strconv.Itoa(postcode(c.Rand)))
+						return numberOf(t, addressPart(c.Rand, part, 0))
 					},
 					fit: digitsFit("postcodes", 5),
 				}, nil
@@ -188,8 +191,9 @@ func addressTransformer() *Transformer {
 }
 
 // addressPart writes one part of a fake address, fitting n characters (0:
-// no limit). Every part draws every component in the same order, so that
-// columns seeded from the same key (per:) describe one address.
+// no limit). Every part draws every component in the same order, in text
+// and number columns alike, so that columns seeded from the same key
+// (per:) describe one address.
 func addressPart(r *Rand, part string, n int) string {
 	number := strconv.Itoa(r.Between(1, 9999))
 	name, suffix := Pick(r, streetNames), Pick(r, streetSuffixes)
