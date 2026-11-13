@@ -41,12 +41,22 @@ func noiseTransformer() *Transformer {
 	}
 }
 
-// noiseFit refuses a decimal column with a negative scale (PostgreSQL):
-// numeric(5,-2) holds only hundreds, and noise rounds to the value's own
-// decimal places, so 300 could become 306.
+// noiseFit refuses the decimal columns noise's bounds don't match. Under a
+// negative scale (PostgreSQL), numeric(5,-2) holds only hundreds, and noise
+// rounds to the value's own decimal places, so 300 could become 306. Under
+// a scale above the precision (PostgreSQL, Oracle), decimal(2,4) holds less
+// than 0.01, but noise bounds a number with no whole digits only below 1,
+// so 0.0099 could become 0.0109.
 func noiseFit(col Column) error {
-	if t := col.Type; t.Kind == value.TypeDecimal && t.Scale < 0 {
+	t := col.Type
+	switch {
+	case t.Kind != value.TypeDecimal:
+		return nil
+	case t.Scale < 0:
 		return &TooShortError{msg: fmt.Sprintf("noise keeps whole numbers whole, and a column of type %s rounds them to tens or more", t), others: true}
+	case t.Precision > 0 && t.Scale > t.Precision:
+		limit := "0." + strings.Repeat("0", t.Scale-t.Precision-1) + "1"
+		return &TooShortError{msg: fmt.Sprintf("noise can raise a number to %s or more, and a column of type %s holds less", limit, t), others: true}
 	}
 	return nil
 }

@@ -202,6 +202,10 @@ func FuzzMaskNumber(f *testing.F) {
 	}
 	f.Add(int64(0), uint64(0), math.Inf(-1), "x", uint8(2), uint8(1), uint8(0), int8(0), uint8(0b1000001), uint8(1), uint16(5))
 	f.Add(int64(0), uint64(0), math.NaN(), "NaN", uint8(1), uint8(0), uint8(10), int8(2), uint8(0b100001), uint8(1), uint16(5))
+	// A scale above the precision: decimal(2,4) holds less than 0.01.
+	for _, d := range []string{"0.0099", "0.0098", "0.0095", "-0.0099"} {
+		f.Add(int64(0), uint64(0), float64(0), d, uint8(1), uint8(0), uint8(2), int8(4), uint8(0), uint8(1), uint16(50))
+	}
 	k := testKeys(f)
 	f.Fuzz(func(t *testing.T, i int64, u uint64, fl float64, d string, kind, bits, precision uint8, scale int8, flags, set uint8, n uint16) {
 		var typ value.Type

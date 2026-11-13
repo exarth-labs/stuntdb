@@ -534,6 +534,21 @@ func TestNoiseBounds(t *testing.T) {
 	if out := dec.must(value.DecimalNaN()); out.Special() != value.NaN {
 		t.Error("noise changed NaN")
 	}
+	// A column with no whole digits holds noise's largest output for its
+	// scale, so values at the column's limit stay in it.
+	for _, typ := range []value.Type{
+		{Kind: value.TypeDecimal, Precision: 2, Scale: 2},
+		{Kind: value.TypeDecimal, Precision: 3, Scale: 3},
+		{Kind: value.TypeDecimal, Precision: 4, Scale: 4},
+	} {
+		m := newMasker(t, column(typ), "noise", map[string]any{"percent": "100"})
+		top := strings.Repeat("9", typ.Scale)
+		for i := range 100 {
+			for _, in := range []string{"0." + top[:typ.Scale-2] + fmt.Sprintf("%02d", i), "-0." + top} {
+				m.must(mustDecimal(t, in))
+			}
+		}
+	}
 	if out := newMasker(t, column(tUint64), "noise", nil).must(value.Uint(math.MaxUint64)).Uint(); out == 0 {
 		t.Error("noise wrapped an unsigned number")
 	}
@@ -687,6 +702,8 @@ func TestConfigureMistakes(t *testing.T) {
 		{"token under a larger scale", column(value.Type{Kind: value.TypeDecimal, Precision: 2, Scale: 16}), Rule{Use: "random_token"}, "random_token writes whole numbers, and a column of type decimal(2,16) can't hold them"},
 		{"fpe under a negative scale", column(tDecimalHundreds), Rule{Use: "fpe"}, "fpe writes whole numbers, and a column of type decimal(5,-2) can't hold them"},
 		{"noise under a negative scale", column(tDecimalHundreds), Rule{Use: "noise"}, "noise keeps whole numbers whole, and a column of type decimal(5,-2) rounds them to tens or more; no other transformer fits the column"},
+		{"noise above its precision", column(value.Type{Kind: value.TypeDecimal, Precision: 2, Scale: 4}), Rule{Use: "noise"}, "noise can raise a number to 0.01 or more, and a column of type decimal(2,4) holds less; no other transformer fits the column"},
+		{"noise far above its precision", column(value.Type{Kind: value.TypeDecimal, Precision: 1, Scale: 6}), Rule{Use: "noise"}, "noise can raise a number to 0.00001 or more, and a column of type decimal(1,6) holds less"},
 		{"phone under a negative scale", column(value.Type{Kind: value.TypeDecimal, Precision: 30, Scale: -2}), Rule{Use: "phone"}, "phone numbers have 10 digits, which don't always fit a column of type decimal(30,-2)"},
 		{"option on a transformer without options", column(tText), Rule{Use: "keep", Options: map[string]any{"length": "5"}}, "keep takes no option length"},
 		{"true for a choice", column(tText), Rule{Use: "phone", Options: map[string]any{"format": true}}, "option format: must be one of"},
