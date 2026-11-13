@@ -116,7 +116,7 @@ func appendNatural(dst []byte, elem *Type, v Value) ([]byte, error) {
 		}
 		return append(dst, ']'), nil
 	default:
-		return nil, fmt.Errorf("value: cannot encode a %s value", v.kind)
+		return nil, fmt.Errorf("value: cannot encode a value of type %s", v.kind)
 	}
 }
 
