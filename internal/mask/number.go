@@ -2,6 +2,7 @@ package mask
 
 import (
 	"cmp"
+	"fmt"
 	"math/big"
 	"strconv"
 	"strings"
@@ -15,6 +16,19 @@ import (
 // permutations stay permutations and distinct values stay distinct.
 func isSpecial(in value.Value) bool {
 	return in.Kind() == value.KindDecimal && in.Special() != value.Normal
+}
+
+// wholeNumbersFit is the fit check of a function that writes whole numbers
+// into a number column. A decimal column holds them only with room before
+// its point and a scale of 0 or more: decimal(4,4) holds 0.1234 at most,
+// and PostgreSQL rounds numeric(5,-2) to hundreds.
+func wholeNumbersFit(name string) func(Column) error {
+	return func(col Column) error {
+		if t := col.Type; t.Kind != value.TypeDecimal || t.Scale >= 0 && (t.Precision == 0 || t.Precision > t.Scale) {
+			return nil
+		}
+		return &TooShortError{msg: fmt.Sprintf("%s writes whole numbers, and a column of type %s can't hold them", name, col.Type), others: true}
+	}
 }
 
 // Whole numbers keep their place among the standard integer types. A

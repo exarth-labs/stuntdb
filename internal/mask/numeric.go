@@ -2,6 +2,7 @@ package mask
 
 import (
 	"errors"
+	"fmt"
 	"math"
 	"math/big"
 	"strconv"
@@ -35,9 +36,19 @@ func noiseTransformer() *Transformer {
 					k = -k
 				}
 				return noisy(in, big.NewRat(basisPoints+k, basisPoints))
-			}}, nil
+			}, fit: noiseFit}, nil
 		},
 	}
+}
+
+// noiseFit refuses a decimal column with a negative scale (PostgreSQL):
+// numeric(5,-2) holds only hundreds, and noise rounds to the value's own
+// decimal places, so 300 could become 306.
+func noiseFit(col Column) error {
+	if t := col.Type; t.Kind == value.TypeDecimal && t.Scale < 0 {
+		return &TooShortError{msg: fmt.Sprintf("noise keeps whole numbers whole, and a column of type %s rounds them to tens or more", t), others: true}
+	}
+	return nil
 }
 
 // noiseClass is noise's class of a column type. noise keeps an integer

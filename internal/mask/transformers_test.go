@@ -35,6 +35,9 @@ var (
 	tBinary    = value.Type{Kind: value.TypeBinary}
 )
 
+// tDecimalHundreds rounds to hundreds, as PostgreSQL 15 and later allow.
+var tDecimalHundreds = value.Type{Kind: value.TypeDecimal, Precision: 5, Scale: -2}
+
 func tString(n int) value.Type { return value.Type{Kind: value.TypeString, MaxLen: n} }
 
 func column(t value.Type) Column {
@@ -680,6 +683,11 @@ func TestConfigureMistakes(t *testing.T) {
 		{"default without one", column(tText), Rule{Use: "default"}, "needs a column with a default"},
 		{"fpe letters in a number", column(tInt64), Rule{Use: "fpe", Options: map[string]any{"alphabet": "alnum"}}, "keeps numbers as digits"},
 		{"fpe on decimal places", column(tDecimal), Rule{Use: "fpe"}, "whole numbers"},
+		{"hash with no whole digits", column(value.Type{Kind: value.TypeDecimal, Precision: 4, Scale: 4}), Rule{Use: "hash"}, "hash writes whole numbers, and a column of type decimal(4,4) can't hold them; these fit: noise"},
+		{"token under a larger scale", column(value.Type{Kind: value.TypeDecimal, Precision: 2, Scale: 16}), Rule{Use: "random_token"}, "random_token writes whole numbers, and a column of type decimal(2,16) can't hold them"},
+		{"fpe under a negative scale", column(tDecimalHundreds), Rule{Use: "fpe"}, "fpe writes whole numbers, and a column of type decimal(5,-2) can't hold them"},
+		{"noise under a negative scale", column(tDecimalHundreds), Rule{Use: "noise"}, "noise keeps whole numbers whole, and a column of type decimal(5,-2) rounds them to tens or more; no other transformer fits the column"},
+		{"phone under a negative scale", column(value.Type{Kind: value.TypeDecimal, Precision: 30, Scale: -2}), Rule{Use: "phone"}, "phone numbers have 10 digits, which don't always fit a column of type decimal(30,-2)"},
 		{"uuid in 8 bytes", column(value.Type{Kind: value.TypeBinary, MaxLen: 8}), Rule{Use: "uuid"}, "16 bytes"},
 		{"password hash too long", column(tString(10)), Rule{Use: "password_hash"}, "password_hash writes up to 60 characters, and the column holds 10; set hash: to a hash that fits"},
 		{"password hash empty", column(tText), Rule{Use: "password_hash", Options: map[string]any{"hash": ""}}, "must not be empty"},
