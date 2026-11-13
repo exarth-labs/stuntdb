@@ -2,12 +2,34 @@ package mask
 
 import (
 	"cmp"
+	"fmt"
 	"math/big"
 	"strconv"
 	"strings"
 
 	"github.com/exarth-labs/stuntdb/internal/value"
 )
+
+// isSpecial reports whether in is a decimal NaN or infinity. The number
+// transformers keep these as they are, as IEEE 754 arithmetic does: they
+// hold no personal data, and no number is ever masked into one, so
+// permutations stay permutations and distinct values stay distinct.
+func isSpecial(in value.Value) bool {
+	return in.Kind() == value.KindDecimal && in.Special() != value.Normal
+}
+
+// wholeNumbersFit is the fit check of a function that writes whole numbers
+// into a number column. A decimal column holds them only with room before
+// its point and a scale of 0 or more: decimal(4,4) holds 0.1234 at most,
+// and PostgreSQL rounds numeric(5,-2) to hundreds.
+func wholeNumbersFit(name string) func(Column) error {
+	return func(col Column) error {
+		if t := col.Type; t.Kind != value.TypeDecimal || t.Scale >= 0 && (t.Precision == 0 || t.Precision > t.Scale) {
+			return nil
+		}
+		return &TooShortError{msg: fmt.Sprintf("%s writes whole numbers, and a column of type %s can't hold them", name, col.Type), others: true}
+	}
+}
 
 // Whole numbers keep their place among the standard integer types. A
 // masked whole number fits every integer type its input fits (int8 to
@@ -134,6 +156,9 @@ func keyedDigits(r *Rand, c numberClass) string {
 // the same sign, as a value of the same kind. A decimal's fraction is
 // dropped.
 func randomDigits(name string, r *Rand, in value.Value) (value.Value, error) {
+	if isSpecial(in) {
+		return in, nil
+	}
 	mag, neg, ok := wholeNumber(in)
 	if !ok {
 		return value.Value{}, errKind(name, in)

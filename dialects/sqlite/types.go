@@ -134,7 +134,7 @@ func sqlType(t value.Type) (string, error) {
 	case value.TypeJSON:
 		return "JSON", nil
 	default:
-		return "", fmt.Errorf("sqlite: a %s column cannot be created yet", t)
+		return "", fmt.Errorf("sqlite: a column of type %s cannot be created yet", t)
 	}
 }
 
@@ -264,7 +264,7 @@ func toStorage(v value.Value) (any, error) {
 			return v.ZeroText(), nil
 		}
 	}
-	return nil, fmt.Errorf("%w: a %s value", errCannotStore, v.Kind())
+	return nil, fmt.Errorf("%w: a value of type %s", errCannotStore, v.Kind())
 }
 
 // decimalToStorage stores a decimal the way a NUMERIC column would: as an

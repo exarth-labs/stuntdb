@@ -176,3 +176,25 @@ func TestCheckErrorsNeverContainTheValue(t *testing.T) {
 		}
 	}
 }
+
+// TestCheckMessages pins the wording "a column of type int8", which reads
+// right for every type name, never "a int8 column".
+func TestCheckMessages(t *testing.T) {
+	instant := time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
+	ts := Type{Kind: TypeTimestamp, Precision: 6}
+	tsTZ := Type{Kind: TypeTimestamp, Precision: 6, TZ: true}
+	for _, c := range []struct {
+		typ  Type
+		val  Value
+		want string
+	}{
+		{int8T, String("x"), "a value of type " + KindString.String() + " cannot go in a column of type " + int8T.String()},
+		{uint8T, Int(-1), "a negative number cannot go in a column of type " + uint8T.String()},
+		{ts, TimestampTZ(instant), "a value with a time zone cannot go in a column of type " + ts.String()},
+		{tsTZ, Timestamp(instant), "a value without a time zone cannot go in a column of type " + tsTZ.String()},
+	} {
+		if err := c.typ.Check(c.val); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("Check() = %v, want %q", err, c.want)
+		}
+	}
+}

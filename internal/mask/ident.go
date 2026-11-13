@@ -156,7 +156,10 @@ func fpeTransformer() *Transformer {
 					return nil, errors.New("option alphabet: fpe keeps numbers as digits, so only digits is allowed in a number column")
 				}
 				return &fn{guarantee: Bijective, mask: fpeNumber, fit: func(col Column) error {
-					if col.Type.Kind == value.TypeDecimal && col.Type.Scale != 0 {
+					if err := wholeNumbersFit("fpe")(col); err != nil {
+						return err
+					}
+					if col.Type.Kind == value.TypeDecimal && col.Type.Scale > 0 {
 						return errors.New("fpe masks whole numbers, and the column has decimal places")
 					}
 					return nil
@@ -240,11 +243,11 @@ func fpeNumber(c *Context, in value.Value) (value.Value, error) {
 	if c.Keys == nil {
 		return value.Value{}, errNoKeys
 	}
+	if isSpecial(in) {
+		return in, nil
+	}
 	mag, neg, ok := wholeNumber(in)
 	if !ok {
-		if in.Kind() == value.KindDecimal {
-			return value.Value{}, errors.New("fpe cannot mask NaN or infinity")
-		}
 		return value.Value{}, errKind("fpe", in)
 	}
 	if in.Kind() == value.KindDecimal && strings.Contains(normalizeDecimal(in.DecimalText()), ".") {
@@ -307,7 +310,7 @@ func hashTransformer() *Transformer {
 			case isNumber(t):
 				return &fn{seeded: true, mask: func(c *Context, in value.Value) (value.Value, error) {
 					return randomDigits("hash", c.Rand, in)
-				}}, nil
+				}, fit: wholeNumbersFit("hash")}, nil
 			}
 			n := o.Int("length", 32, 1, 64)
 			if t.distinct && n < distinctHashLen {
@@ -391,7 +394,7 @@ func randomTokenTransformer() *Transformer {
 			case isNumber(t):
 				return &fn{seeded: true, mask: func(c *Context, in value.Value) (value.Value, error) {
 					return randomDigits("random_token", c.Rand, in)
-				}}, nil
+				}, fit: wholeNumbersFit("random_token")}, nil
 			}
 			g := None
 			if t.distinct {

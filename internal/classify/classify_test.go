@@ -96,7 +96,8 @@ func TestColumnNames(t *testing.T) {
 		{"logins", "remote_addr", "string", "core.ip_address"},
 		// No built-in transformer fakes native IP, location or enum values yet.
 		{"logins", "last_sign_in_ip", "opaque", ""},
-		{"places", "location", "opaque", ""},
+		{"places", "geolocation", "opaque", ""},
+		{"places", "coordinates", "opaque", ""},
 		{"users", "religion", "enum", ""},
 		{"users", "religion", "string", "core.special_category"},
 		{"places", "latitude", "float", "core.geolocation"},

@@ -35,6 +35,9 @@ var (
 	tBinary    = value.Type{Kind: value.TypeBinary}
 )
 
+// tDecimalHundreds rounds to hundreds, as PostgreSQL 15 and later allow.
+var tDecimalHundreds = value.Type{Kind: value.TypeDecimal, Precision: 5, Scale: -2}
+
 func tString(n int) value.Type { return value.Type{Kind: value.TypeString, MaxLen: n} }
 
 func column(t value.Type) Column {
@@ -680,6 +683,16 @@ func TestConfigureMistakes(t *testing.T) {
 		{"default without one", column(tText), Rule{Use: "default"}, "needs a column with a default"},
 		{"fpe letters in a number", column(tInt64), Rule{Use: "fpe", Options: map[string]any{"alphabet": "alnum"}}, "keeps numbers as digits"},
 		{"fpe on decimal places", column(tDecimal), Rule{Use: "fpe"}, "whole numbers"},
+		{"hash with no whole digits", column(value.Type{Kind: value.TypeDecimal, Precision: 4, Scale: 4}), Rule{Use: "hash"}, "hash writes whole numbers, and a column of type decimal(4,4) can't hold them; these fit: noise"},
+		{"token under a larger scale", column(value.Type{Kind: value.TypeDecimal, Precision: 2, Scale: 16}), Rule{Use: "random_token"}, "random_token writes whole numbers, and a column of type decimal(2,16) can't hold them"},
+		{"fpe under a negative scale", column(tDecimalHundreds), Rule{Use: "fpe"}, "fpe writes whole numbers, and a column of type decimal(5,-2) can't hold them"},
+		{"noise under a negative scale", column(tDecimalHundreds), Rule{Use: "noise"}, "noise keeps whole numbers whole, and a column of type decimal(5,-2) rounds them to tens or more; no other transformer fits the column"},
+		{"phone under a negative scale", column(value.Type{Kind: value.TypeDecimal, Precision: 30, Scale: -2}), Rule{Use: "phone"}, "phone numbers have 10 digits, which don't always fit a column of type decimal(30,-2)"},
+		{"option on a transformer without options", column(tText), Rule{Use: "keep", Options: map[string]any{"length": "5"}}, "keep takes no option length"},
+		{"true for a choice", column(tText), Rule{Use: "phone", Options: map[string]any{"format": true}}, "option format: must be one of"},
+		{"false for a choice", column(tText), Rule{Use: "phone", Options: map[string]any{"format": false}}, "option format: must be one of"},
+		{"a number of 10 digits", column(tInt64), Rule{Use: "noise", Options: map[string]any{"percent": "1000000000"}}, "option percent: must be a whole number from 1 to 100"},
+		{"password hash not printable", column(tText), Rule{Use: "password_hash", Options: map[string]any{"hash": "$2a$10$\x01"}}, "must be printable ASCII"},
 		{"uuid in 8 bytes", column(value.Type{Kind: value.TypeBinary, MaxLen: 8}), Rule{Use: "uuid"}, "16 bytes"},
 		{"password hash too long", column(tString(10)), Rule{Use: "password_hash"}, "password_hash writes up to 60 characters, and the column holds 10; set hash: to a hash that fits"},
 		{"password hash empty", column(tText), Rule{Use: "password_hash", Options: map[string]any{"hash": ""}}, "must not be empty"},
@@ -785,6 +798,7 @@ func TestConstantTypes(t *testing.T) {
 		{value.Type{Kind: value.TypeBool}, "false"},
 		{tInt64, "-7"},
 		{tUint64, "7"},
+		{tUint64, "18446744073709551615"}, // above int64
 		{tFloat, "1.5"},
 		{tDecimal, "12.50"},
 		{tText, ""},
@@ -875,13 +889,120 @@ func TestKindErrors(t *testing.T) {
 }
 
 func TestNoKeys(t *testing.T) {
-	for _, use := range []string{"uuid", "fpe"} {
-		f, err := Configure(column(tText), Rule{Use: use})
+	for _, c := range []struct {
+		use string
+		col Column
+		in  value.Value
+	}{
+		{"uuid", column(tText), value.String("123e4567-e89b-42d3-a456-426614174000")},
+		{"fpe", column(tText), value.String("123e4567-e89b-42d3-a456-426614174000")},
+		{"fpe", column(tInt64), value.Int(1234567)},
+	} {
+		f, err := Configure(c.col, Rule{Use: c.use})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := f.Mask(&Context{}, value.String("123e4567-e89b-42d3-a456-426614174000")); err == nil {
-			t.Errorf("%s ran without keys", use)
+		if _, err := f.Mask(&Context{}, c.in); err == nil {
+			t.Errorf("%s in %s ran without keys", c.use, c.col.Type)
+		}
+	}
+}
+
+// TestSpecialNumbersStay checks that NaN and the infinities come out as they
+// went in, as in IEEE 754 arithmetic, also where values must stay distinct.
+func TestSpecialNumbersStay(t *testing.T) {
+	unconstrained := value.Type{Kind: value.TypeDecimal} // the only decimal that holds an infinity in PostgreSQL
+	decimals := []value.Value{value.DecimalNaN(), value.DecimalInfinity(false), value.DecimalInfinity(true)}
+	floats := []value.Value{value.Float(math.NaN()), value.Float(math.Inf(1)), value.Float(math.Inf(-1))}
+	for _, c := range []struct {
+		use string
+		col Column
+		ins []value.Value
+	}{
+		{"fpe", uniqueColumn(unconstrained), decimals},
+		{"hash", column(unconstrained), decimals},
+		{"random_token", column(unconstrained), decimals},
+		{"noise", column(unconstrained), decimals},
+		{"noise", column(tFloat), floats},
+	} {
+		m := newMasker(t, c.col, c.use, nil)
+		for _, in := range c.ins {
+			if out := m.must(in); !out.Equal(in) && !(in.Kind() == value.KindFloat && math.IsNaN(in.Float()) && math.IsNaN(out.Float())) {
+				t.Errorf("%s changed a %s special value", c.use, c.col.Type)
+			}
+		}
+	}
+}
+
+// TestDateShiftStaysInYears checks that date_shift turns the other way when
+// a shift would leave the years 1 to 9999, for dates and timestamps, naive
+// and zoned, and moves by no more than max_days either way.
+func TestDateShiftStaysInYears(t *testing.T) {
+	const maxDays = 36500
+	opts := map[string]any{"max_days": strconv.Itoa(maxDays)}
+	zone := time.FixedZone("", -5*3600)
+	for _, edge := range []time.Time{
+		time.Date(1, 1, 1, 0, 0, 0, 0, time.UTC),
+		time.Date(9999, 12, 31, 23, 59, 59, 0, time.UTC),
+	} {
+		for day := range 200 {
+			at := edge.AddDate(0, 0, day)
+			if edge.Year() == 9999 {
+				at = edge.AddDate(0, 0, -day)
+			}
+			date, err := value.Date(at.Year(), at.Month(), at.Day())
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, c := range []struct {
+				typ value.Type
+				in  value.Value
+			}{
+				{tDate, date},
+				{tTimestamp, value.Timestamp(at)},
+				{tTimeTZ, value.TimestampTZWithZone(at.In(zone))},
+			} {
+				out := newMasker(t, column(c.typ), "date_shift", opts).must(c.in)
+				before, after := instant(c.in), instant(out)
+				if after.Year() < 1 || after.Year() > 9999 {
+					t.Fatalf("date_shift left the years 1 to 9999 in %s", c.typ)
+				}
+				shift := after.Sub(before).Hours() / 24
+				if shift == 0 || math.Abs(shift) > maxDays {
+					t.Fatalf("date_shift moved by %v days in %s", shift, c.typ)
+				}
+			}
+		}
+	}
+}
+
+// instant returns a date or timestamp as a time, a date at midnight UTC.
+func instant(v value.Value) time.Time {
+	if v.Kind() == value.KindDate {
+		y, m, d := v.Date()
+		return time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
+	}
+	return v.Timestamp()
+}
+
+// TestShortNameFallbacks checks the names a small max_length leaves: when
+// the drawn name is too long, company and address's city pick another that
+// fits.
+func TestShortNameFallbacks(t *testing.T) {
+	for _, c := range []struct {
+		use  string
+		opts map[string]any
+		n    int
+	}{
+		{"company", map[string]any{"max_length": strconv.Itoa(shortest(lastNames))}, shortest(lastNames)},
+		{"address", map[string]any{"part": "city", "max_length": strconv.Itoa(shortest(cities))}, shortest(cities)},
+		{"address", map[string]any{"part": "street", "max_length": strconv.Itoa(shortest(streetNames))}, shortest(streetNames)},
+	} {
+		m := newMasker(t, column(tText), c.use, c.opts)
+		for i := range 300 {
+			if out := m.must(value.Int(int64(i))); utf8.RuneCountInString(out.Text()) > c.n {
+				t.Fatalf("%s with max_length %d wrote %d characters", c.use, c.n, utf8.RuneCountInString(out.Text()))
+			}
 		}
 	}
 }

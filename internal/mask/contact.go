@@ -31,7 +31,7 @@ func digitsFit(what string, n int) func(Column) error {
 			}
 			fits = n <= len(strconv.FormatUint(limit, 10))-1
 		case value.TypeDecimal:
-			fits = t.Precision == 0 || t.Precision-t.Scale >= n
+			fits = t.Scale >= 0 && (t.Precision == 0 || t.Precision-t.Scale >= n)
 		}
 		if !fits {
 			return fmt.Errorf("%s have %d digits, which don't always fit a column of type %s", what, n, t)

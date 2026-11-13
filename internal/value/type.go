@@ -260,7 +260,7 @@ func (t Type) Check(v Value) error {
 		return t.checkInt(v)
 	}
 	if v.kind != naturalKind(t) {
-		return misfit("a %s value cannot go in a %s column", v.kind, t)
+		return misfit("a value of type %s cannot go in a column of type %s", v.kind, t)
 	}
 	switch t.Kind {
 	case TypeFloat:
@@ -307,7 +307,7 @@ func (t Type) checkInt(v Value) error {
 		i := int64(v.num)
 		switch {
 		case t.Unsigned && i < 0:
-			return misfit("a negative number cannot go in a %s column", t)
+			return misfit("a negative number cannot go in a column of type %s", t)
 		case t.Unsigned && bits < 64 && uint64(i) > uint64(1)<<bits-1:
 			return misfit("the number is out of range for %s", t)
 		case !t.Unsigned && bits < 64 && (i < -(int64(1)<<(bits-1)) || i > int64(1)<<(bits-1)-1):
@@ -348,9 +348,9 @@ func (t Type) checkDecimal(v Value) error {
 func (t Type) checkTemporal(v Value) error {
 	if v.tz != t.TZ {
 		if v.tz {
-			return misfit("a value with a time zone cannot go in a %s column", t)
+			return misfit("a value with a time zone cannot go in a column of type %s", t)
 		}
-		return misfit("a value without a time zone cannot go in a %s column", t)
+		return misfit("a value without a time zone cannot go in a column of type %s", t)
 	}
 	if v.special != Normal {
 		return nil

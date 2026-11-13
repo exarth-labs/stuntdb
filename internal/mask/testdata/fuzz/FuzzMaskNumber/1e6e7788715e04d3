@@ -1,0 +1,12 @@
+go test fuzz v1
+int64(123478)
+uint64(123456)
+float64(123456)
+string("0")
+byte('\x01')
+byte('\x03')
+byte('4')
+int8(56)
+byte('\x00')
+byte('\x00')
+uint16(0)
