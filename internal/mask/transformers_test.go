@@ -886,6 +886,32 @@ func TestNoKeys(t *testing.T) {
 	}
 }
 
+// TestSpecialNumbersStay checks that NaN and the infinities come out as they
+// went in, as in IEEE 754 arithmetic, also where values must stay distinct.
+func TestSpecialNumbersStay(t *testing.T) {
+	unconstrained := value.Type{Kind: value.TypeDecimal} // the only decimal that holds an infinity in PostgreSQL
+	decimals := []value.Value{value.DecimalNaN(), value.DecimalInfinity(false), value.DecimalInfinity(true)}
+	floats := []value.Value{value.Float(math.NaN()), value.Float(math.Inf(1)), value.Float(math.Inf(-1))}
+	for _, c := range []struct {
+		use string
+		col Column
+		ins []value.Value
+	}{
+		{"fpe", uniqueColumn(unconstrained), decimals},
+		{"hash", column(unconstrained), decimals},
+		{"random_token", column(unconstrained), decimals},
+		{"noise", column(unconstrained), decimals},
+		{"noise", column(tFloat), floats},
+	} {
+		m := newMasker(t, c.col, c.use, nil)
+		for _, in := range c.ins {
+			if out := m.must(in); !out.Equal(in) && !(in.Kind() == value.KindFloat && math.IsNaN(in.Float()) && math.IsNaN(out.Float())) {
+				t.Errorf("%s changed a %s special value", c.use, c.col.Type)
+			}
+		}
+	}
+}
+
 func TestTag(t *testing.T) {
 	var seed [32]byte
 	if got := tag(seed); got != strings.Repeat("0", tagLen) {

@@ -9,6 +9,14 @@ import (
 	"github.com/exarth-labs/stuntdb/internal/value"
 )
 
+// isSpecial reports whether in is a decimal NaN or infinity. The number
+// transformers keep these as they are, as IEEE 754 arithmetic does: they
+// hold no personal data, and no number is ever masked into one, so
+// permutations stay permutations and distinct values stay distinct.
+func isSpecial(in value.Value) bool {
+	return in.Kind() == value.KindDecimal && in.Special() != value.Normal
+}
+
 // Whole numbers keep their place among the standard integer types. A
 // masked whole number fits every integer type its input fits (int8 to
 // uint64), whatever column it is in: that depends only on the value, so
@@ -134,6 +142,9 @@ func keyedDigits(r *Rand, c numberClass) string {
 // the same sign, as a value of the same kind. A decimal's fraction is
 // dropped.
 func randomDigits(name string, r *Rand, in value.Value) (value.Value, error) {
+	if isSpecial(in) {
+		return in, nil
+	}
 	mag, neg, ok := wholeNumber(in)
 	if !ok {
 		return value.Value{}, errKind(name, in)

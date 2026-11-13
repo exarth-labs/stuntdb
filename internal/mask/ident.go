@@ -240,11 +240,11 @@ func fpeNumber(c *Context, in value.Value) (value.Value, error) {
 	if c.Keys == nil {
 		return value.Value{}, errNoKeys
 	}
+	if isSpecial(in) {
+		return in, nil
+	}
 	mag, neg, ok := wholeNumber(in)
 	if !ok {
-		if in.Kind() == value.KindDecimal {
-			return value.Value{}, errors.New("fpe cannot mask NaN or infinity")
-		}
 		return value.Value{}, errKind("fpe", in)
 	}
 	if in.Kind() == value.KindDecimal && strings.Contains(normalizeDecimal(in.DecimalText()), ".") {
