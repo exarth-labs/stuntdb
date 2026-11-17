@@ -21,8 +21,8 @@ func noiseTransformer() *Transformer {
 		Summary: "Changes a number by a keyed random amount of up to percent (1 to 100, default 10) of its value, up or down. " +
 			"Integers and decimals are rounded to their own precision, so zero, and a number too small for the change to reach " +
 			"one unit, stay the same. Results fit wherever the input fits: an integer stays within the integer types it fits, " +
-			"a decimal keeps its decimal places and its number of whole digits, computed exactly. A decimal with more decimal " +
-			"places than its column declares, which SQLite can hold, is rounded to the column's scale.",
+			"a decimal keeps its decimal places and its number of whole digits, computed exactly. A decimal its column's " +
+			"type doesn't allow, which SQLite can hold, is rounded to the column's scale and kept within its precision.",
 		Types:   []value.TypeKind{value.TypeInt, value.TypeFloat, value.TypeDecimal},
 		Options: []string{"percent"},
 		alike:   noiseClass,
@@ -36,7 +36,7 @@ func noiseTransformer() *Transformer {
 				if c.Rand.IntN(2) == 0 {
 					k = -k
 				}
-				return noisy(in, big.NewRat(basisPoints+k, basisPoints), t.scale)
+				return noisy(in, big.NewRat(basisPoints+k, basisPoints), t)
 			}, fit: noiseFit}, nil
 		},
 	}
@@ -76,9 +76,9 @@ func noiseClass(typ value.Type) string {
 
 // noisy multiplies a number by factor, which is from 0 to 2, and keeps the
 // result where the input fits, from the value alone (see the noise Summary).
-// A decimal is rounded to at most maxScale decimal places, unless maxScale
-// is negative.
-func noisy(in value.Value, factor *big.Rat, maxScale int) (value.Value, error) {
+// A decimal is also kept within its column's scale and whole digits, when
+// the column declares them (see target).
+func noisy(in value.Value, factor *big.Rat, col target) (value.Value, error) {
 	switch in.Kind() {
 	case value.KindFloat:
 		f := in.Float()
@@ -116,11 +116,11 @@ func noisy(in value.Value, factor *big.Rat, maxScale int) (value.Value, error) {
 		if !ok {
 			return value.Value{}, errors.New("noise cannot read the decimal")
 		}
-		if maxScale >= 0 && scale > maxScale {
+		if col.scale >= 0 && scale > col.scale {
 			// Round to the column's scale first, as the database does on
 			// insert, and noise that: 0.9999999999999999 in a DECIMAL(10,0)
 			// column is the number 1, not a number below 1.
-			scale = maxScale
+			scale = col.scale
 			rounded, err := value.Decimal(decimalText(roundHalfAway(r, scale), scale))
 			if err != nil {
 				return value.Value{}, err
@@ -130,12 +130,16 @@ func noisy(in value.Value, factor *big.Rat, maxScale int) (value.Value, error) {
 		}
 		scaled := roundHalfAway(r.Mul(r, factor), scale)
 		// The largest magnitude with the input's whole digits, written with
-		// its decimal places: the input fit its column's precision, so
-		// this does too.
+		// its decimal places, so the result fits wherever the input fits. The
+		// column's whole digits bound it too, for a value SQLite holds beyond
+		// them: 99.999 in DECIMAL(4,2) rounds to 100.00.
 		whole, _, _ := wholeNumber(in)
 		digits := len(whole)
 		if whole == "0" {
 			digits = 0
+		}
+		if col.whole >= 0 {
+			digits = min(digits, col.whole)
 		}
 		limit := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(digits+scale)), nil)
 		limit.Sub(limit, big.NewInt(1))
