@@ -38,7 +38,7 @@ func seed(t *testing.T, d *Dialect, url string, ids ...int64) {
 	if err := l.CreateTables(ctx, db); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := l.Load(ctx, people, []schema.Ident{"ID"}, &rowIter{rows: rows, buf: make([]value.Value, 1)}); err != nil {
+	if _, err := l.Load(ctx, people, []schema.Ident{"ID"}, &rowIter{ctx: ctx, rows: rows, buf: make([]value.Value, 1)}); err != nil {
 		t.Fatal(err)
 	}
 	if err := l.Finish(ctx, db); err != nil {
@@ -160,7 +160,7 @@ func TestLoaderRejectsMisuse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := l.Load(ctx, people, []schema.Ident{"ID"}, &rowIter{}); err == nil {
+	if _, err := l.Load(ctx, people, []schema.Ident{"ID"}, &rowIter{ctx: ctx}); err == nil {
 		t.Error("Load before CreateTables should fail")
 	}
 	if err := l.Commit(ctx); err == nil {
