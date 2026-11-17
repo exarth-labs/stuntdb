@@ -9,6 +9,7 @@ import (
 	"math"
 	"slices"
 	"time"
+	"unsafe"
 )
 
 // Kind is the kind of data a Value holds.
@@ -391,6 +392,16 @@ func (v Value) Equal(w Value) bool {
 		}
 	}
 	return true
+}
+
+// Size estimates the memory v holds, in bytes: the value itself, its text or
+// bytes, and its elements. It sizes batches of rows, not exact accounting.
+func (v Value) Size() int {
+	n := int(unsafe.Sizeof(v)) + len(v.str)
+	for _, e := range v.elems {
+		n += e.Size()
+	}
+	return n
 }
 
 // String describes v without revealing its contents, such as "<string value>".

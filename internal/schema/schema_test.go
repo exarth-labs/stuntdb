@@ -247,6 +247,22 @@ func TestIdentityKey(t *testing.T) {
 			nil,
 		},
 		{"no key at all", &Table{Columns: []*Column{col("a", false)}}, nil},
+		{
+			// SQLite: a TEXT PRIMARY KEY can hold NULLs.
+			"nullable primary key is skipped",
+			&Table{
+				Columns:    []*Column{col("code", true), col("email", false)},
+				PrimaryKey: &Key{Columns: []Ident{"code"}},
+				Uniques:    []*Key{{Columns: []Ident{"email"}}},
+			},
+			[]Ident{"email"},
+		},
+		{
+			"composite primary key with one nullable column, and nothing else",
+			&Table{Columns: []*Column{col("a", false), col("b", true)}, PrimaryKey: &Key{Columns: []Ident{"a", "b"}}},
+			nil,
+		},
+		{"primary key without columns", &Table{Columns: []*Column{col("a", false)}, PrimaryKey: &Key{}}, nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

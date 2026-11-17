@@ -13,6 +13,7 @@ import (
 	"cmp"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"regexp"
 	"slices"
@@ -53,6 +54,8 @@ func Run(t *testing.T, h Harness) {
 	t.Run("RoundTrip", func(t *testing.T) { testRoundTrip(t, h) })
 	t.Run("KeysIn", func(t *testing.T) { testKeysIn(t, h) })
 	t.Run("KeysetPagination", func(t *testing.T) { testKeysetPagination(t, h) })
+	t.Run("KeysetEveryKeyType", func(t *testing.T) { testKeysetEveryKeyType(t, h) })
+	t.Run("DefaultRows", func(t *testing.T) { testDefaultRows(t, h) })
 	t.Run("Join", func(t *testing.T) { testJoin(t, h) })
 	t.Run("AbortLeavesNothing", func(t *testing.T) { testAbort(t, h) })
 	t.Run("CommitNeedsReplace", func(t *testing.T) { testReplace(t, h) })
@@ -188,26 +191,119 @@ func testKeysetPagination(t *testing.T, h Harness) {
 	snap := snapshot(t, open(t, h, url, dialect.Source))
 	users := schema.TableRef{Namespace: h.Namespace, Name: "users"}
 	cols := columnNames(db.Table(users))
-	id := []schema.Ident{"id"}
+	compareRows(t, "users read in chunks", data[users], readInChunks(t, snap, users, cols, []schema.Ident{"id"}, 5))
+}
 
+// testKeysetEveryKeyType reads tables in chunks of one row along each of
+// their keys, of every common type and composite, each time passing back
+// the last key as Read returned it. Each must give exactly the rows of one
+// full read, in the same order.
+func testKeysetEveryKeyType(t *testing.T, h Harness) {
+	url := h.NewDatabase(t)
+	db, data := shop(h.Namespace)
+	keyedDB, keyedRef, keyedRows := keyed(h.Namespace)
+	ns := db.Namespace(h.Namespace)
+	ns.Tables = append(ns.Tables, keyedDB.Table(keyedRef))
+	data[keyedRef] = keyedRows
+	load(t, h, url, db, data, dialect.LoadOptions{RunID: "keyset-types"})
+	snap := snapshot(t, open(t, h, url, dialect.Source))
+
+	items := schema.TableRef{Namespace: h.Namespace, Name: "order_items"}
+	for _, c := range []struct {
+		table schema.TableRef
+		key   []schema.Ident
+	}{
+		{keyedRef, []schema.Ident{"id"}},
+		{keyedRef, []schema.Ident{"code"}},
+		{keyedRef, []schema.Ident{"amount"}},
+		{keyedRef, []schema.Ident{"day"}},
+		{keyedRef, []schema.Ident{"at"}},
+		{items, []schema.Ident{"order_id", "line"}},
+	} {
+		what := fmt.Sprintf("%s by %v", c.table, c.key)
+		cols := columnNames(db.Table(c.table))
+		full := readAll(t, snap, dialect.ReadQuery{Table: c.table, Columns: cols, OrderBy: c.key})
+		if len(full) != len(data[c.table]) {
+			t.Errorf("%s: one read returned %d rows, want %d", what, len(full), len(data[c.table]))
+		}
+		compareRows(t, what+", in chunks of one row", full, readInChunks(t, snap, c.table, cols, c.key, 1))
+	}
+}
+
+// readInChunks reads a table in chunks of at most limit rows along key,
+// passing back the last row's key exactly as Read returned it.
+func readInChunks(t *testing.T, s dialect.Snapshot, ref schema.TableRef, cols, key []schema.Ident, limit int) [][]value.Value {
+	t.Helper()
+	pos := make([]int, len(key))
+	for i, k := range key {
+		if pos[i] = slices.Index(cols, k); pos[i] < 0 {
+			t.Fatalf("dialecttest: key column %s is not read", k)
+		}
+	}
 	var all [][]value.Value
 	var last []value.Value
-	for range 100 { // more than enough chunks; stops early
-		q := dialect.ReadQuery{Table: users, Columns: cols, OrderBy: id, Limit: 5}
+	for {
+		q := dialect.ReadQuery{Table: ref, Columns: cols, OrderBy: key, Limit: limit}
 		if last != nil {
-			q.Where = dialect.After{Columns: id, Key: last}
+			q.Where = dialect.After{Columns: key, Key: last}
 		}
-		chunk := readAll(t, snap, q)
-		if len(chunk) == 0 {
-			break
-		}
-		if len(chunk) > 5 {
-			t.Fatalf("a chunk returned %d rows, more than the limit of 5", len(chunk))
+		chunk := readAll(t, s, q)
+		if len(chunk) > limit {
+			t.Fatalf("%s: a chunk returned %d rows, more than the limit of %d", ref, len(chunk), limit)
 		}
 		all = append(all, chunk...)
-		last = []value.Value{chunk[len(chunk)-1][0]}
+		if len(chunk) < limit {
+			return all
+		}
+		if len(all) > 1000 {
+			t.Fatalf("%s: reading in chunks doesn't end; a key passed back after a chunk finds its rows again", ref)
+		}
+		last = make([]value.Value, len(pos))
+		for i, p := range pos {
+			last[i] = chunk[len(chunk)-1][p]
+		}
 	}
-	compareRows(t, "users read in chunks", data[users], all)
+}
+
+// testDefaultRows loads a table with no columns: each row is written with
+// every column's default. The sample's columns have none, so every value
+// is NULL.
+func testDefaultRows(t *testing.T, h Harness) {
+	ctx := context.Background()
+	url := h.NewDatabase(t)
+	ref := schema.TableRef{Namespace: h.Namespace, Name: "events"}
+	db := &schema.Database{Namespaces: []*schema.Namespace{{Name: h.Namespace, Tables: []*schema.Table{{
+		Name: "events",
+		Columns: []*schema.Column{
+			{Name: "note", Type: textType, Nullable: true},
+			{Name: "n", Type: intType, Nullable: true},
+		},
+	}}}}}
+	l := mustLoader(t, h, url, "defaults")
+	defer func() { _ = l.Abort(ctx) }()
+	if err := l.CreateTables(ctx, db); err != nil {
+		t.Fatalf("CreateTables: %v", err)
+	}
+	n, err := l.Load(ctx, ref, nil, rowsOf([][]value.Value{{}, {}, {}}))
+	if err != nil || n != 3 {
+		t.Fatalf("Load with no columns = %d, %v; want 3 rows", n, err)
+	}
+	if err := l.Finish(ctx, db); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+	if err := l.Commit(ctx); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	rows := readAll(t, snapshot(t, open(t, h, url, dialect.Source)), dialect.ReadQuery{Table: ref, Columns: columnNames(db.Table(ref))})
+	if len(rows) != 3 {
+		t.Fatalf("the table has %d rows, want 3", len(rows))
+	}
+	for i, row := range rows {
+		if !slices.ContainsFunc(row, func(v value.Value) bool { return !v.IsNull() }) {
+			continue
+		}
+		t.Errorf("row %d has a value, but its columns have no default", i)
+	}
 }
 
 func testJoin(t *testing.T, h Harness) {

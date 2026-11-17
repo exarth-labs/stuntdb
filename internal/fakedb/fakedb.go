@@ -4,13 +4,17 @@
 // wherever SQLite is unusual, so that neither the core nor the conformance
 // suite can quietly come to depend on SQLite behavior:
 //
-//   - several namespaces, and shared snapshots that parallel readers can join;
+//   - several namespaces, and shared snapshots that parallel readers can join
+//     (WithSnapshot models the single-snapshot engines instead);
+//   - one open read per reader, as MySQL allows one result per connection,
+//     and one load per table, as COPY streams a table in one statement;
 //   - an empty string is stored as NULL, as in Oracle;
 //   - unquoted names fold to upper case, as in Oracle;
 //   - foreign keys and unique keys are checked only in Finish, after loading;
 //   - at most MaxParams key values per read, so callers must send long key
 //     lists in batches, and Statements counts the reads;
 //   - rows come back in a reused slice, so callers that keep references break;
+//   - reads and loads stop when their context is canceled;
 //   - native SQL conditions are not supported.
 //
 // URLs look like "fake:<name>". Each Dialect from New has its own store, so
@@ -23,11 +27,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
+	"math/big"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/exarth-labs/stuntdb/dialect"
 	"github.com/exarth-labs/stuntdb/internal/schema"
@@ -40,9 +47,19 @@ const MaxParams = 5
 
 // Dialect is the fake engine. Use New to make one.
 type Dialect struct {
+	mode       dialect.SnapshotMode
 	mu         sync.Mutex
 	databases  map[string]*store
 	statements atomic.Int64
+}
+
+// Option configures a Dialect.
+type Option func(*Dialect)
+
+// WithSnapshot sets the snapshot mode the engine reports. Only
+// SnapshotShared readers can Join. The default is SnapshotShared.
+func WithSnapshot(mode dialect.SnapshotMode) Option {
+	return func(d *Dialect) { d.mode = mode }
 }
 
 // store is one database: its structure and the rows of each table, in the
@@ -54,7 +71,13 @@ type store struct {
 }
 
 // New returns a fake engine with an empty store.
-func New() *Dialect { return &Dialect{databases: make(map[string]*store)} }
+func New(opts ...Option) *Dialect {
+	d := &Dialect{mode: dialect.SnapshotShared, databases: make(map[string]*store)}
+	for _, o := range opts {
+		o(d)
+	}
+	return d
+}
 
 // Create stores the structure of a database, without rows, under name, so
 // that "fake:<name>" opens it. It replaces any database of that name.
@@ -104,7 +127,7 @@ func (c *conn) Info() dialect.ServerInfo { return dialect.ServerInfo{Engine: "fa
 
 func (c *conn) Capabilities() dialect.Capabilities {
 	return dialect.Capabilities{
-		Snapshot:          dialect.SnapshotShared,
+		Snapshot:          c.d.mode,
 		EmptyStringIsNull: true,
 		TableNames:        dialect.FoldUpper,
 		ColumnNames:       dialect.FoldUpper,
@@ -160,19 +183,29 @@ func (c *conn) Close() error { return nil }
 // snapshot reads a frozen copy of a database, so that writes after it
 // started stay invisible, and joined readers see exactly the same data.
 type snapshot struct {
-	d *Dialect
-	s *store
+	d    *Dialect
+	s    *store
+	open *rowIter // the read not yet closed, if any
 }
 
 func (s *snapshot) Point() string { return strconv.FormatInt(s.s.version, 10) }
 
 func (s *snapshot) Join(context.Context) (dialect.Snapshot, error) {
+	if s.d.mode != dialect.SnapshotShared {
+		return nil, dialect.ErrNotSupported
+	}
 	return &snapshot{d: s.d, s: s.s}, nil
 }
 
 func (s *snapshot) Close() error { return nil }
 
-func (s *snapshot) Read(_ context.Context, q dialect.ReadQuery) (dialect.RowIter, error) {
+func (s *snapshot) Read(ctx context.Context, q dialect.ReadQuery) (dialect.RowIter, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if s.open != nil && !s.open.closed {
+		return nil, errors.New("fakedb: a read is still open on this snapshot; close it before the next one")
+	}
 	if err := q.Validate(); err != nil {
 		return nil, err
 	}
@@ -223,7 +256,8 @@ func (s *snapshot) Read(_ context.Context, q dialect.ReadQuery) (dialect.RowIter
 	for i, row := range matched {
 		out[i] = pick(row, project)
 	}
-	return &rowIter{rows: out, buf: make([]value.Value, len(q.Columns))}, nil
+	s.open = &rowIter{ctx: ctx, rows: out, buf: make([]value.Value, len(q.Columns))}
+	return s.open, nil
 }
 
 // keyValues counts the KeysIn values in a condition.
@@ -307,28 +341,94 @@ func compareValues(a, b value.Value) (int, error) {
 		return 0, fmt.Errorf("%w: cannot order a %s against a %s", dialect.ErrNotSupported, a.Kind(), b.Kind())
 	}
 	switch a.Kind() {
+	case value.KindBool:
+		return cmp.Compare(boolRank(a.Bool()), boolRank(b.Bool())), nil
 	case value.KindInt:
 		return cmp.Compare(a.Int(), b.Int()), nil
 	case value.KindUint:
 		return cmp.Compare(a.Uint(), b.Uint()), nil
+	case value.KindFloat:
+		// NaN last, as for decimals; cmp.Compare puts it first.
+		x, y := a.Float(), b.Float()
+		if nx, ny := math.IsNaN(x), math.IsNaN(y); nx || ny {
+			return cmp.Compare(boolRank(nx), boolRank(ny)), nil
+		}
+		return cmp.Compare(x, y), nil
 	case value.KindString:
 		return strings.Compare(a.Text(), b.Text()), nil
 	case value.KindBytes:
 		return bytes.Compare(a.Bytes(), b.Bytes()), nil
+	case value.KindUUID:
+		x, y := a.UUID(), b.UUID()
+		return bytes.Compare(x[:], y[:]), nil
+	case value.KindDecimal, value.KindDate, value.KindTimestamp:
+		sa, sb := a.Special(), b.Special()
+		switch {
+		case sa == value.ZeroDate && sb == value.ZeroDate:
+			return strings.Compare(a.ZeroText(), b.ZeroText()), nil
+		case sa != value.Normal || sb != value.Normal:
+			return cmp.Compare(specialRank(sa), specialRank(sb)), nil
+		case a.Kind() == value.KindDecimal:
+			x, _ := new(big.Rat).SetString(a.DecimalText())
+			y, _ := new(big.Rat).SetString(b.DecimalText())
+			return x.Cmp(y), nil
+		case a.Kind() == value.KindDate:
+			return dateOf(a).Compare(dateOf(b)), nil
+		default:
+			return a.Timestamp().Compare(b.Timestamp()), nil
+		}
+	case value.KindTime:
+		return cmp.Compare(a.TimeOfDay(), b.TimeOfDay()), nil
 	default:
 		return 0, fmt.Errorf("%w: fakedb cannot order %s values", dialect.ErrNotSupported, a.Kind())
 	}
 }
 
+func boolRank(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// specialRank orders special values as PostgreSQL does, with MySQL's zero
+// dates before every real date: -infinity, zero dates, the rest, infinity,
+// then NaN.
+func specialRank(s value.Special) int {
+	switch s {
+	case value.NegInfinity:
+		return 0
+	case value.ZeroDate:
+		return 1
+	case value.Normal:
+		return 2
+	case value.PosInfinity:
+		return 3
+	default:
+		return 4
+	}
+}
+
+func dateOf(v value.Value) time.Time {
+	y, m, d := v.Date()
+	return time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
+}
+
 type rowIter struct {
+	ctx    context.Context
 	rows   [][]value.Value
 	next   int
 	buf    []value.Value
+	err    error
 	closed bool
 }
 
 func (r *rowIter) Next() bool {
-	if r.closed || r.next >= len(r.rows) {
+	if r.closed || r.err != nil || r.next >= len(r.rows) {
+		return false
+	}
+	if err := r.ctx.Err(); err != nil {
+		r.err = err
 		return false
 	}
 	copy(r.buf, r.rows[r.next]) // the same slice every time, like real drivers
@@ -337,7 +437,7 @@ func (r *rowIter) Next() bool {
 }
 
 func (r *rowIter) Row() []value.Value { return r.buf }
-func (r *rowIter) Err() error         { return nil }
+func (r *rowIter) Err() error         { return r.err }
 func (r *rowIter) Close() error       { r.closed = true; return nil }
 
 // loader loads into a private staging store, and swaps it in on Commit.
@@ -347,6 +447,7 @@ type loader struct {
 	opts     dialect.LoadOptions
 	mu       sync.Mutex
 	staging  *store
+	loaded   map[schema.TableRef]bool
 	finished bool
 }
 
@@ -365,10 +466,13 @@ func (l *loader) CreateTables(_ context.Context, db *schema.Database) error {
 		s.db.Namespaces = append(s.db.Namespaces, copied)
 	}
 	l.staging = s
+	l.loaded = map[schema.TableRef]bool{}
 	return nil
 }
 
-func (l *loader) Load(_ context.Context, ref schema.TableRef, columns []schema.Ident, rows dialect.RowIter) (int64, error) {
+// Load writes NULL where a column is left to its default or identity: the
+// fake can't evaluate SQL expressions.
+func (l *loader) Load(ctx context.Context, ref schema.TableRef, columns []schema.Ident, rows dialect.RowIter) (int64, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.staging == nil {
@@ -378,6 +482,10 @@ func (l *loader) Load(_ context.Context, ref schema.TableRef, columns []schema.I
 	if t == nil {
 		return 0, fmt.Errorf("fakedb: table %s does not exist", ref)
 	}
+	if l.loaded[ref] {
+		return 0, fmt.Errorf("fakedb: %s is already loaded; a table is loaded in one call", ref)
+	}
+	l.loaded[ref] = true
 	idx, err := columnIndexes(t, columns)
 	if err != nil {
 		return 0, err
@@ -389,7 +497,13 @@ func (l *loader) Load(_ context.Context, ref schema.TableRef, columns []schema.I
 	}
 	var n int64
 	for rows.Next() {
+		if err := ctx.Err(); err != nil {
+			return n, err
+		}
 		in := rows.Row()
+		if len(in) != len(idx) {
+			return n, fmt.Errorf("fakedb: row %d of %s has %d values for %d columns", n+1, ref, len(in), len(idx))
+		}
 		full := make([]value.Value, len(t.Columns))
 		for j, i := range idx {
 			v := in[j]
@@ -406,7 +520,8 @@ func (l *loader) Load(_ context.Context, ref schema.TableRef, columns []schema.I
 			full[i] = v
 		}
 		for i, col := range t.Columns {
-			if !slices.Contains(idx, i) && !col.Nullable && col.Generated == nil {
+			filled := col.Nullable || col.Generated != nil || col.Default != nil || col.Identity != nil
+			if !filled && !slices.Contains(idx, i) {
 				return n, fmt.Errorf("fakedb: column %q of %s cannot be NULL", col.Name, ref)
 			}
 		}

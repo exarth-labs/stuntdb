@@ -209,13 +209,29 @@ func (r *reader) table(name, native string, withoutRowid bool) (*schema.Table, e
 				c.Nullable = false
 			}
 		case len(pk) == 1 && strings.EqualFold(pk[0].NativeType, "INTEGER"):
-			// INTEGER PRIMARY KEY is the rowid: never NULL, and numbered
-			// automatically when a row is inserted without it.
-			pk[0].Nullable = false
-			pk[0].Identity = &schema.Identity{}
+			alias, err := r.rowidAlias(name)
+			if err != nil {
+				return nil, err
+			}
+			if alias {
+				// INTEGER PRIMARY KEY is the rowid: never NULL, and numbered
+				// automatically when a row is inserted without it.
+				pk[0].Nullable = false
+				pk[0].Identity = &schema.Identity{}
+			}
 		}
 	}
 	return t, nil
+}
+
+// rowidAlias reports whether a table's INTEGER primary key is its rowid. A
+// column declared INTEGER PRIMARY KEY DESC is not (a documented SQLite
+// quirk) and can hold NULLs; such a key has an index of its own, and the
+// rowid never has one.
+func (r *reader) rowidAlias(table string) (bool, error) {
+	var n int64
+	err := r.tx.QueryRowContext(r.ctx, `SELECT count(*) FROM pragma_index_list(?, 'main') WHERE origin = 'pk'`, table).Scan(&n)
+	return n == 0, err
 }
 
 // classifyDefault sorts a column default into a kind, so that common defaults

@@ -157,10 +157,12 @@ func (l *loader) Load(ctx context.Context, ref schema.TableRef, columns []schema
 	if ref.Namespace != l.namespace || l.tables[ref.Name] == nil {
 		return 0, fmt.Errorf("sqlite: table %s is not part of this load", ref)
 	}
+	table := schema.TableRef{Namespace: mainNamespace, Name: ref.Name}
+	insert := l.insert
 	if len(columns) == 0 {
-		return 0, fmt.Errorf("sqlite: load %s: no columns", ref)
+		insert = l.insertDefaults
 	}
-	n, err := l.insert(ctx, schema.TableRef{Namespace: mainNamespace, Name: ref.Name}, columns, rows)
+	n, err := insert(ctx, table, columns, rows)
 	if err != nil {
 		return n, l.failed(fmt.Errorf("sqlite: load %s: %w", ref, err))
 	}
@@ -211,6 +213,35 @@ func (l *loader) insert(ctx context.Context, table schema.TableRef, columns []sc
 			return written, err
 		}
 		written += pending
+	}
+	return written, tx.Commit()
+}
+
+// insertDefaults writes one row of column defaults for each row: the rows
+// of a table whose columns are all left to their defaults have no values.
+func (l *loader) insertDefaults(ctx context.Context, table schema.TableRef, _ []schema.Ident, rows dialect.RowIter) (int64, error) {
+	tx, err := l.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	stmt, err := tx.PrepareContext(ctx, defaultsSQL(table))
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = stmt.Close() }()
+	var written int64
+	for rows.Next() {
+		if n := len(rows.Row()); n != 0 {
+			return written, fmt.Errorf("row %d has %d values for no columns", written+1, n)
+		}
+		if _, err := stmt.ExecContext(ctx); err != nil {
+			return written, err
+		}
+		written++
+	}
+	if err := rows.Err(); err != nil {
+		return written, err
 	}
 	return written, tx.Commit()
 }

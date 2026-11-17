@@ -213,3 +213,26 @@ func TestDecimalDigits(t *testing.T) {
 		}
 	}
 }
+
+func TestSize(t *testing.T) {
+	base := Null().Size()
+	if base < 64 {
+		t.Fatalf("a value's own size is %d bytes, too small for its fields", base)
+	}
+	dec, _ := Decimal("-123.45")
+	for _, c := range []struct {
+		name string
+		v    Value
+		want int
+	}{
+		{"int", Int(1 << 40), base},
+		{"text", String("héllo"), base + len("héllo")},
+		{"bytes", Bytes(make([]byte, 1000)), base + 1000},
+		{"decimal", dec, base + len("-123.45")},
+		{"array", Array([]Value{String("ab"), Null(), Array([]Value{Bytes([]byte{1})})}), base + (base + 2) + base + (base + (base + 1))},
+	} {
+		if got := c.v.Size(); got != c.want {
+			t.Errorf("%s: Size() = %d, want %d", c.name, got, c.want)
+		}
+	}
+}

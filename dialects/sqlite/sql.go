@@ -202,6 +202,10 @@ func insertSQL(table schema.TableRef, columns []schema.Ident, rows int) string {
 	return b.String()
 }
 
+func defaultsSQL(table schema.TableRef) string {
+	return "INSERT INTO " + quoteTable(table) + " DEFAULT VALUES"
+}
+
 // createTableSQL builds a CREATE TABLE statement from the canonical model,
 // for tables that don't come from a SQLite source. It covers columns, NOT
 // NULL, keys and foreign keys. Defaults, checks and generated columns are
