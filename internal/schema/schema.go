@@ -232,8 +232,11 @@ func (t *Table) Column(name Ident) *Column {
 // else the first unique constraint, or else the first plain unique index,
 // whose columns are all NOT NULL. It returns nil when the table has none,
 // in which case its rows cannot be tracked one by one.
+//
+// A primary key is checked too: SQLite lets one hold NULLs, and rows
+// looked up or read in chunks by key never find a NULL.
 func (t *Table) IdentityKey() []Ident {
-	if t.PrimaryKey != nil && len(t.PrimaryKey.Columns) > 0 {
+	if t.PrimaryKey != nil && t.allNotNull(t.PrimaryKey.Columns) {
 		return t.PrimaryKey.Columns
 	}
 	for _, k := range t.Uniques {
