@@ -27,6 +27,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"math/big"
 	"slices"
 	"strconv"
@@ -347,7 +348,12 @@ func compareValues(a, b value.Value) (int, error) {
 	case value.KindUint:
 		return cmp.Compare(a.Uint(), b.Uint()), nil
 	case value.KindFloat:
-		return cmp.Compare(a.Float(), b.Float()), nil
+		// NaN last, as for decimals; cmp.Compare puts it first.
+		x, y := a.Float(), b.Float()
+		if nx, ny := math.IsNaN(x), math.IsNaN(y); nx || ny {
+			return cmp.Compare(boolRank(nx), boolRank(ny)), nil
+		}
+		return cmp.Compare(x, y), nil
 	case value.KindString:
 		return strings.Compare(a.Text(), b.Text()), nil
 	case value.KindBytes:

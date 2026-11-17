@@ -218,7 +218,7 @@ func TestOrderEveryKeyKind(t *testing.T) {
 		{value.Bool(false), value.Bool(true)},
 		{value.Int(-5), value.Int(0), value.Int(10)},
 		{value.Uint(0), value.Uint(math.MaxUint64)},
-		{value.Float(math.Inf(-1)), value.Float(-0.5), value.Float(2), value.Float(math.Inf(1))},
+		{value.Float(math.Inf(-1)), value.Float(-0.5), value.Float(2), value.Float(math.Inf(1)), value.Float(math.NaN())},
 		{value.String("10"), value.String("9"), value.String("B"), value.String("a")},
 		{value.Bytes([]byte{0}), value.Bytes([]byte{0, 1}), value.Bytes([]byte{1})},
 		{value.UUID([16]byte{0: 1}), value.UUID([16]byte{0: 2}), value.UUID([16]byte{0: 2, 15: 1})},

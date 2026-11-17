@@ -89,8 +89,10 @@ func shop(ns schema.Ident) (*schema.Database, map[schema.TableRef][][]value.Valu
 
 // keyed is a table with one NOT NULL unique key of each common type, for
 // reading in chunks along each of them. The values sort differently as text
-// and as what they are: "10" before "9", 10.00 after 9.99, and dates and
-// timestamps across months, years and microseconds.
+// and as what they are ("10" before "9", 10.00 after 9.99, dates and
+// timestamps across months, years and microseconds), so an adapter whose
+// After compares unlike its ORDER BY loses or repeats rows. The suite
+// compares chunked reads with one full read, not with an expected order.
 func keyed(ns schema.Ident) (*schema.Database, schema.TableRef, [][]value.Value) {
 	ref := schema.TableRef{Namespace: ns, Name: "keyed"}
 	db := &schema.Database{Namespaces: []*schema.Namespace{{
