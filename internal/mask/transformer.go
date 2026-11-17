@@ -106,6 +106,12 @@ type target struct {
 	// every column of the domain then uses the forms that keep values
 	// distinct.
 	distinct bool
+
+	// scale is a decimal column's declared scale, or -1 when it declares
+	// none. Only noise reads it, to round a value with more decimal places
+	// than its column declares (SQLite keeps such floats). noise's class
+	// separates decimal scales, so every column of a domain has the same.
+	scale int
 }
 
 // Transformer is one entry of the catalog.
@@ -155,8 +161,8 @@ func (t *Transformer) UsesDomain() bool { return !t.domainFree }
 // Distinct is left out: it never changes which options are read
 // (TestDistinctReadsTheSameOptions).
 func (t *Transformer) SameOptions(kind value.TypeKind, a, b map[string]any) bool {
-	_, ra, errA := t.configure(kind, a, false)
-	_, rb, errB := t.configure(kind, b, false)
+	_, ra, errA := t.configure(value.Type{Kind: kind}, a, false)
+	_, rb, errB := t.configure(value.Type{Kind: kind}, b, false)
 	return errA == nil && errB == nil && maps.Equal(ra, rb)
 }
 
@@ -222,7 +228,7 @@ func Configure(col Column, rule Rule) (Func, error) {
 	if !t.Accepts(col.Type.Kind) {
 		return nil, fmt.Errorf("%s cannot mask a column of type %s; it masks %s", t.Name, col.Type, typeList(t.Types))
 	}
-	f, _, err := t.configure(col.Type.Kind, rule.Options, rule.Distinct || col.Unique)
+	f, _, err := t.configure(col.Type, rule.Options, rule.Distinct || col.Unique)
 	if err != nil {
 		return nil, err
 	}
@@ -252,12 +258,17 @@ func Configure(col Column, rule Rule) (Func, error) {
 // configure builds the masking function for a column kind, and reports the
 // mistakes in the options together. It also returns the options the build
 // used, with their defaults filled in (see Options.resolve).
-func (t *Transformer) configure(kind value.TypeKind, options map[string]any, distinct bool) (*fn, map[string]string, error) {
+func (t *Transformer) configure(typ value.Type, options map[string]any, distinct bool) (*fn, map[string]string, error) {
+	kind := typ.Kind
 	if kind == value.TypeString {
 		kind = value.TypeText
 	}
+	scale := -1
+	if kind == value.TypeDecimal && typ.Precision > 0 {
+		scale = typ.Scale
+	}
 	o := newOptions(t, kind, options)
-	f, err := t.build(target{kind: kind, distinct: distinct}, o)
+	f, err := t.build(target{kind: kind, distinct: distinct, scale: scale}, o)
 	if err := errors.Join(err, o.err()); err != nil {
 		return nil, nil, err
 	}
@@ -296,7 +307,7 @@ func alternatives(col Column, distinct bool, except string) []string {
 		if t.Name == except || t.Name == "keep" || t.Name == "null" || t.Name == "default" || !t.Accepts(col.Type.Kind) || text && t.readsText {
 			continue
 		}
-		f, _, err := t.configure(col.Type.Kind, nil, distinct || col.Unique)
+		f, _, err := t.configure(col.Type, nil, distinct || col.Unique)
 		if err != nil || (col.Unique || distinct) && f.guarantee == None || (f.fit != nil && f.fit(col) != nil) {
 			continue
 		}
@@ -324,12 +335,13 @@ func (c *checked) Mask(ctx *Context, in value.Value) (value.Value, error) {
 		}
 		return out, nil
 	}
-	// A value of another kind than the column's type, such as text in a
-	// SQLite INTEGER column, passes only when the input had that kind too:
-	// the source engine already holds such values, and the transformer
-	// kept their kind. A transformer never introduces a mismatch.
-	sourceKind := !natural(c.col.Type, out.Kind()) && out.Kind() == in.Kind()
-	if err := c.col.Type.Check(out); err != nil && !sourceKind {
+	// The source engine already holds the input, so a mismatch it carries
+	// passes: an output returned unchanged, such as keep's
+	// 0.30000000000000004 in a SQLite DECIMAL(12,2) column, and a value of
+	// another kind whose kind the transformer kept, such as text in a SQLite
+	// INTEGER column. A transformer never introduces a mismatch.
+	fromSource := out.Equal(in) || !natural(c.col.Type, out.Kind()) && out.Kind() == in.Kind()
+	if err := c.col.Type.Check(out); err != nil && !fromSource {
 		if natural(c.col.Type, in.Kind()) && c.col.Type.Check(in) != nil {
 			return value.Value{}, fmt.Errorf("the database holds a value that does not fit the column's type (%s), so %s cannot mask it", c.col.Type, c.name)
 		}

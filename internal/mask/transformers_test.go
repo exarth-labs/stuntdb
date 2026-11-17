@@ -881,6 +881,80 @@ func TestOutputChecks(t *testing.T) {
 	if _, err := f.Mask(&Context{}, value.Int(1)); err == nil {
 		t.Error("an out-of-range integer passed")
 	}
+
+	// SQLite keeps values its declared types don't allow; keep copies them
+	// exactly, but a transformer that writes a new value must make it fit.
+	price := value.Type{Kind: value.TypeDecimal, Precision: 12, Scale: 2}
+	small := value.Type{Kind: value.TypeDecimal, Precision: 4, Scale: 2}
+	for _, c := range []struct {
+		typ value.Type
+		in  value.Value
+	}{
+		{price, mustDecimal(t, "0.30000000000000004")},
+		{small, mustDecimal(t, "123456")},
+		{tString(10), value.String("fifteen chars!!")},
+		{value.Type{Kind: value.TypeJSON}, value.String("{not json")},
+	} {
+		out, err := newMasker(t, column(c.typ), "keep", nil).mask(c.in)
+		if err != nil || !out.Equal(c.in) {
+			t.Errorf("keep on a value beyond a column of type %s: %v", c.typ, err)
+		}
+	}
+	_, err := newMasker(t, column(small), "hash", nil).mask(mustDecimal(t, "123456"))
+	if err == nil || !strings.Contains(err.Error(), "the database holds a value that does not fit the column's type (decimal(4,2)), so hash cannot mask it") {
+		t.Errorf("hash on a number beyond its column's precision: %v", err)
+	}
+}
+
+// TestNoiseRoundsToColumnScale checks that noise rounds a decimal with more
+// decimal places than its column declares to the column's scale first, as
+// the database would, and masks it into a value that fits.
+func TestNoiseRoundsToColumnScale(t *testing.T) {
+	for _, c := range []struct {
+		typ    value.Type
+		in     string
+		places int    // the most decimal places of an output
+		only   string // the only possible output at percent 10, when there is one
+	}{
+		{value.Type{Kind: value.TypeDecimal, Precision: 12, Scale: 2}, "0.30000000000000004", 2, ""},
+		{value.Type{Kind: value.TypeDecimal, Precision: 12, Scale: 2}, "-1234.5678", 2, ""},
+		{value.Type{Kind: value.TypeDecimal, Precision: 19, Scale: 0}, "5.0", 0, ""},
+		{value.Type{Kind: value.TypeDecimal, Precision: 10, Scale: 0}, "0.9999999999999999", 0, "1"},
+		// The database stores it as zero, and noise keeps zero.
+		{value.Type{Kind: value.TypeDecimal, Precision: 12, Scale: 2}, "0.0049999999", 2, "0.00"},
+		{value.Type{Kind: value.TypeDecimal, Precision: 4, Scale: 4}, "0.12345", 4, ""},
+	} {
+		in := mustDecimal(t, c.in)
+		for _, percent := range []string{"10", "100"} {
+			f, err := Configure(column(c.typ), Rule{Use: "noise", Options: map[string]any{"percent": percent}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			k := testKeys(t)
+			for d := range 200 {
+				m := &masker{t: t, use: "noise", f: f, seeder: newSeeder(k), rand: newRand(), ctx: Context{Keys: k, Domain: "d" + strconv.Itoa(d)}}
+				out := m.must(in)
+				_, frac, _ := strings.Cut(out.DecimalText(), ".")
+				if len(frac) > c.places || c.typ.Check(out) != nil {
+					t.Fatalf("noise wrote a value with %d decimal places, or that doesn't fit %s", len(frac), c.typ)
+				}
+				if percent == "10" && c.only != "" && out.DecimalText() != c.only {
+					t.Fatalf("noise of a value that rounds to %s at %s gave another value", c.only, c.typ)
+				}
+			}
+		}
+	}
+	// 0.99999 rounds to 1.0000, which no decimal(4,4) holds, so noise can't
+	// make it fit.
+	_, err := newMasker(t, column(value.Type{Kind: value.TypeDecimal, Precision: 4, Scale: 4}), "noise", nil).mask(mustDecimal(t, "0.99999"))
+	if err == nil || !strings.Contains(err.Error(), "the database holds a value that does not fit") {
+		t.Errorf("noise on a value that doesn't fit its column even rounded: %v", err)
+	}
+	// A value within its column's scale keeps its own decimal places.
+	out := newMasker(t, column(value.Type{Kind: value.TypeDecimal, Precision: 12, Scale: 4}), "noise", nil).must(mustDecimal(t, "1234.5"))
+	if _, frac, _ := strings.Cut(out.DecimalText(), "."); len(frac) > 1 {
+		t.Error("noise added decimal places to a value within its column's scale")
+	}
 }
 
 // TestKindErrors checks that a value of a kind a transformer can't mask is
@@ -1163,8 +1237,8 @@ func TestSameOptions(t *testing.T) {
 func TestDistinctReadsTheSameOptions(t *testing.T) {
 	for _, tr := range Catalog() {
 		for _, k := range tr.Types {
-			_, plain, errP := tr.configure(k, nil, false)
-			_, distinct, errD := tr.configure(k, nil, true)
+			_, plain, errP := tr.configure(value.Type{Kind: k}, nil, false)
+			_, distinct, errD := tr.configure(value.Type{Kind: k}, nil, true)
 			if errP == nil && errD == nil && !maps.Equal(plain, distinct) {
 				t.Errorf("%s in %s reads %v, but %v where values stay distinct", tr.Name, k, plain, distinct)
 			}

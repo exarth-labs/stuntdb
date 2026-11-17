@@ -21,11 +21,12 @@ func noiseTransformer() *Transformer {
 		Summary: "Changes a number by a keyed random amount of up to percent (1 to 100, default 10) of its value, up or down. " +
 			"Integers and decimals are rounded to their own precision, so zero, and a number too small for the change to reach " +
 			"one unit, stay the same. Results fit wherever the input fits: an integer stays within the integer types it fits, " +
-			"a decimal keeps its decimal places and its number of whole digits, computed exactly.",
+			"a decimal keeps its decimal places and its number of whole digits, computed exactly. A decimal with more decimal " +
+			"places than its column declares, which SQLite can hold, is rounded to the column's scale.",
 		Types:   []value.TypeKind{value.TypeInt, value.TypeFloat, value.TypeDecimal},
 		Options: []string{"percent"},
 		alike:   noiseClass,
-		build: func(_ target, o *Options) (*fn, error) {
+		build: func(t target, o *Options) (*fn, error) {
 			percent := o.Int("percent", 10, 1, 100)
 			return &fn{seeded: true, mask: func(c *Context, in value.Value) (value.Value, error) {
 				// A factor of 1 ± k/10000, with k from 1 to percent·100. The
@@ -35,7 +36,7 @@ func noiseTransformer() *Transformer {
 				if c.Rand.IntN(2) == 0 {
 					k = -k
 				}
-				return noisy(in, big.NewRat(basisPoints+k, basisPoints))
+				return noisy(in, big.NewRat(basisPoints+k, basisPoints), t.scale)
 			}, fit: noiseFit}, nil
 		},
 	}
@@ -75,7 +76,9 @@ func noiseClass(typ value.Type) string {
 
 // noisy multiplies a number by factor, which is from 0 to 2, and keeps the
 // result where the input fits, from the value alone (see the noise Summary).
-func noisy(in value.Value, factor *big.Rat) (value.Value, error) {
+// A decimal is rounded to at most maxScale decimal places, unless maxScale
+// is negative.
+func noisy(in value.Value, factor *big.Rat, maxScale int) (value.Value, error) {
 	switch in.Kind() {
 	case value.KindFloat:
 		f := in.Float()
@@ -112,6 +115,18 @@ func noisy(in value.Value, factor *big.Rat) (value.Value, error) {
 		r, ok := new(big.Rat).SetString(text)
 		if !ok {
 			return value.Value{}, errors.New("noise cannot read the decimal")
+		}
+		if maxScale >= 0 && scale > maxScale {
+			// Round to the column's scale first, as the database does on
+			// insert, and noise that: 0.9999999999999999 in a DECIMAL(10,0)
+			// column is the number 1, not a number below 1.
+			scale = maxScale
+			rounded, err := value.Decimal(decimalText(roundHalfAway(r, scale), scale))
+			if err != nil {
+				return value.Value{}, err
+			}
+			in = rounded
+			r.SetString(rounded.DecimalText())
 		}
 		scaled := roundHalfAway(r.Mul(r, factor), scale)
 		// The largest magnitude with the input's whole digits, written with
