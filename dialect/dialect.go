@@ -207,6 +207,11 @@ func (c IdentifierCase) Match(name string, ident schema.Ident) bool {
 }
 
 // Snapshot is a consistent, read-only view of a source database.
+//
+// One goroutine uses a Snapshot at a time, and closes each RowIter before
+// the next Read: some engines can't run a statement on a connection while a
+// result is still open (MySQL, SQL Server without MARS). Parallel reads use
+// Join.
 type Snapshot interface {
 	// Point identifies the moment the view shows, for the run manifest: a
 	// PostgreSQL WAL position, a MySQL GTID set, an Oracle SCN. It may be empty.
@@ -216,7 +221,8 @@ type Snapshot interface {
 	// It returns ErrNotSupported unless the snapshot mode is SnapshotShared.
 	Join(ctx context.Context) (Snapshot, error)
 
-	// Read streams the rows that q selects.
+	// Read streams the rows that q selects. The RowIter of the previous
+	// Read must be closed first.
 	Read(ctx context.Context, q ReadQuery) (RowIter, error)
 
 	// Close ends this reader's view. Joined readers are closed separately.
@@ -263,8 +269,14 @@ type Loader interface {
 
 	// Load writes rows into a table, with values in the order of columns, and
 	// returns how many rows it wrote. Generated columns are never among the
-	// columns. Load may be called for several tables at once; adapters that
-	// can only write one table at a time take turns internally.
+	// columns. With no columns, each row is written with every column's
+	// default, so a table whose columns are all left to their defaults keeps
+	// its row count.
+	//
+	// Load is called once per table, with all of its rows, as engines that
+	// stream a table in one statement (COPY) need. It may be called for
+	// several tables at once; adapters that can only write one table at a
+	// time take turns internally.
 	Load(ctx context.Context, table schema.TableRef, columns []schema.Ident, rows RowIter) (int64, error)
 
 	// Finish adds the remaining indexes and constraints, checks every foreign

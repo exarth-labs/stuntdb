@@ -26,6 +26,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Changed
 
 - Adapter SDK: each adapter reports how many key values one read can carry (`Capabilities.MaxKeyValues`), and stuntdb sends longer key lists in batches. Adapters no longer split a read, so its order and limit always hold.
+- Adapter SDK: the contract now states that a snapshot is used by one goroutine at a time, with each read closed before the next (parallel reads use `Join`); that `Load` is called once per table; that `Load` with no columns writes one row of column defaults per row; and that keys passed back to `After` and `KeysIn` are the values a read returned. The conformance suite checks chunked reads along keys of every common type, and loads with no columns. The SQLite adapter writes such rows with `DEFAULT VALUES`, so a table whose columns are all left to their defaults keeps its row count.
+- A SQLite primary key that can hold NULLs (any but `INTEGER PRIMARY KEY` or `WITHOUT ROWID`) is no longer used to identify rows: rows read in chunks or looked up by key never find a NULL.
 
 ## [0.0.1] - 2026-10-20
 

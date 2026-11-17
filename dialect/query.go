@@ -42,6 +42,9 @@ type Predicate interface{ predicate() }
 // send longer lists in batches of Capabilities.KeysPerRead keys. Adapters run
 // every read as a single statement, and return ErrTooManyKeys rather than
 // split one.
+//
+// Keys hold values as Read returned them, and adapters compare them as the
+// engine compares the stored values (see After).
 type KeysIn struct {
 	Columns []schema.Ident
 	Keys    [][]value.Value
@@ -50,6 +53,11 @@ type KeysIn struct {
 // After matches rows that sort after Key in the order of Columns, for reading
 // a large table in chunks (keyset pagination). Engines without row-value
 // comparisons expand it, e.g. a > ? OR (a = ? AND b > ?).
+//
+// Key holds the values Read returned for the last row, unchanged, and the
+// adapter compares them exactly as the engine compares the stored values:
+// in SQLite, the text '5' and the integer 5 compare differently, so a value
+// must go back in the form it was read.
 type After struct {
 	Columns []schema.Ident
 	Key     []value.Value
