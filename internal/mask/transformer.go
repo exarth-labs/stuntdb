@@ -107,11 +107,14 @@ type target struct {
 	// distinct.
 	distinct bool
 
-	// scale is a decimal column's declared scale, or -1 when it declares
-	// none. Only noise reads it, to round a value with more decimal places
-	// than its column declares (SQLite keeps such floats). noise's class
-	// separates decimal scales, so every column of a domain has the same.
-	scale int
+	// scale and whole are a decimal column's declared decimal places and
+	// whole digits (precision − scale), or -1 when it declares no precision.
+	// Only noise reads them, to bring a value SQLite keeps beyond its
+	// column's type, such as 0.30000000000000004 or 99.999 in DECIMAL(4,2),
+	// within the column. noise's class separates decimal scales, and the
+	// whole digits never bound a value that fits its column, so every column
+	// of a domain still masks such values alike.
+	scale, whole int
 }
 
 // Transformer is one entry of the catalog.
@@ -263,12 +266,12 @@ func (t *Transformer) configure(typ value.Type, options map[string]any, distinct
 	if kind == value.TypeString {
 		kind = value.TypeText
 	}
-	scale := -1
+	scale, whole := -1, -1
 	if kind == value.TypeDecimal && typ.Precision > 0 {
-		scale = typ.Scale
+		scale, whole = typ.Scale, max(typ.Precision-typ.Scale, 0)
 	}
 	o := newOptions(t, kind, options)
-	f, err := t.build(target{kind: kind, distinct: distinct, scale: scale}, o)
+	f, err := t.build(target{kind: kind, distinct: distinct, scale: scale, whole: whole}, o)
 	if err := errors.Join(err, o.err()); err != nil {
 		return nil, nil, err
 	}

@@ -906,23 +906,35 @@ func TestOutputChecks(t *testing.T) {
 	}
 }
 
-// TestNoiseRoundsToColumnScale checks that noise rounds a decimal with more
-// decimal places than its column declares to the column's scale first, as
-// the database would, and masks it into a value that fits.
-func TestNoiseRoundsToColumnScale(t *testing.T) {
+// TestNoiseFitsDecimalColumn checks that noise masks a decimal its column's
+// type doesn't allow, as SQLite keeps them, into a value that fits under
+// every key: rounded to the column's scale first, as the database would,
+// and kept within the column's whole digits.
+func TestNoiseFitsDecimalColumn(t *testing.T) {
+	dec := func(precision, scale int) value.Type {
+		return value.Type{Kind: value.TypeDecimal, Precision: precision, Scale: scale}
+	}
 	for _, c := range []struct {
 		typ    value.Type
 		in     string
 		places int    // the most decimal places of an output
 		only   string // the only possible output at percent 10, when there is one
+		edge   string // an output some key gives at percent 10: the column's bound
 	}{
-		{value.Type{Kind: value.TypeDecimal, Precision: 12, Scale: 2}, "0.30000000000000004", 2, ""},
-		{value.Type{Kind: value.TypeDecimal, Precision: 12, Scale: 2}, "-1234.5678", 2, ""},
-		{value.Type{Kind: value.TypeDecimal, Precision: 19, Scale: 0}, "5.0", 0, ""},
-		{value.Type{Kind: value.TypeDecimal, Precision: 10, Scale: 0}, "0.9999999999999999", 0, "1"},
+		{dec(12, 2), "0.30000000000000004", 2, "", ""},
+		{dec(12, 2), "-1234.5678", 2, "", ""},
+		{dec(19, 0), "5.0", 0, "", ""},
+		{dec(10, 0), "0.9999999999999999", 0, "1", ""},
 		// The database stores it as zero, and noise keeps zero.
-		{value.Type{Kind: value.TypeDecimal, Precision: 12, Scale: 2}, "0.0049999999", 2, "0.00"},
-		{value.Type{Kind: value.TypeDecimal, Precision: 4, Scale: 4}, "0.12345", 4, ""},
+		{dec(12, 2), "0.0049999999", 2, "0.00", ""},
+		{dec(4, 4), "0.12345", 4, "", ""},
+		// Rounding carries into a digit the column doesn't have.
+		{dec(4, 2), "99.999", 2, "", "99.99"},
+		{dec(4, 2), "-99.995", 2, "", "-99.99"},
+		{dec(4, 4), "0.99999", 4, "", "0.9999"},
+		{dec(3, 0), "999.5", 0, "", "999"},
+		// More whole digits than the column has: every result is its bound.
+		{dec(4, 2), "123456", 0, "99", ""},
 	} {
 		in := mustDecimal(t, c.in)
 		for _, percent := range []string{"10", "100"} {
@@ -931,6 +943,7 @@ func TestNoiseRoundsToColumnScale(t *testing.T) {
 				t.Fatal(err)
 			}
 			k := testKeys(t)
+			reached := false
 			for d := range 200 {
 				m := &masker{t: t, use: "noise", f: f, seeder: newSeeder(k), rand: newRand(), ctx: Context{Keys: k, Domain: "d" + strconv.Itoa(d)}}
 				out := m.must(in)
@@ -941,19 +954,51 @@ func TestNoiseRoundsToColumnScale(t *testing.T) {
 				if percent == "10" && c.only != "" && out.DecimalText() != c.only {
 					t.Fatalf("noise of a value that rounds to %s at %s gave another value", c.only, c.typ)
 				}
+				reached = reached || out.DecimalText() == c.edge
+			}
+			if percent == "10" && c.edge != "" && !reached {
+				t.Errorf("noise in %s never reached the column's bound, %s: it is bounded below the column", c.typ, c.edge)
 			}
 		}
 	}
-	// 0.99999 rounds to 1.0000, which no decimal(4,4) holds, so noise can't
-	// make it fit.
-	_, err := newMasker(t, column(value.Type{Kind: value.TypeDecimal, Precision: 4, Scale: 4}), "noise", nil).mask(mustDecimal(t, "0.99999"))
-	if err == nil || !strings.Contains(err.Error(), "the database holds a value that does not fit") {
-		t.Errorf("noise on a value that doesn't fit its column even rounded: %v", err)
-	}
 	// A value within its column's scale keeps its own decimal places.
-	out := newMasker(t, column(value.Type{Kind: value.TypeDecimal, Precision: 12, Scale: 4}), "noise", nil).must(mustDecimal(t, "1234.5"))
+	out := newMasker(t, column(dec(12, 4)), "noise", nil).must(mustDecimal(t, "1234.5"))
 	if _, frac, _ := strings.Cut(out.DecimalText(), "."); len(frac) > 1 {
 		t.Error("noise added decimal places to a value within its column's scale")
+	}
+}
+
+// TestNoiseAlikeAcrossPrecisions checks that the column's whole digits never
+// bound a value that fits the column, so the columns of one scale in a
+// domain, such as DECIMAL(4,2) and DECIMAL(12,2), mask it alike, also where
+// noise reaches the value's own bound (99.50 can't become 109.45). Only a
+// value one of them can't hold differs.
+func TestNoiseAlikeAcrossPrecisions(t *testing.T) {
+	small := column(value.Type{Kind: value.TypeDecimal, Precision: 4, Scale: 2})
+	wide := column(value.Type{Kind: value.TypeDecimal, Precision: 12, Scale: 2})
+	k := testKeys(t)
+	mask := func(col Column, in string, domain int) value.Value {
+		f, err := Configure(col, Rule{Use: "noise"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		m := &masker{t: t, use: "noise", f: f, seeder: newSeeder(k), rand: newRand(), ctx: Context{Keys: k, Domain: "d" + strconv.Itoa(domain)}}
+		return m.must(mustDecimal(t, in))
+	}
+	for _, in := range []string{"12.34", "99.50", "-99.50", "0.07", "99.99"} {
+		for d := range 100 {
+			if !mask(small, in, d).Equal(mask(wide, in, d)) {
+				t.Fatalf("a value that fits decimal(4,2) and decimal(12,2) was masked differently in them")
+			}
+		}
+	}
+	beyond := false
+	for d := range 100 {
+		whole, _, _ := strings.Cut(mask(wide, "99.999", d).DecimalText(), ".")
+		beyond = beyond || len(whole) == 3
+	}
+	if !beyond {
+		t.Error("decimal(12,2) bounded 99.999 at 99.99, the bound of a narrower column")
 	}
 }
 
