@@ -2,6 +2,7 @@ package mask
 
 import (
 	"math"
+	"math/big"
 	"strconv"
 	"strings"
 	"testing"
@@ -38,7 +39,8 @@ const leakMarker = "Qz7mK"
 //  2. one value gives one output, also from a masker that masked another
 //     value before, and twice in a row
 //  3. a value that fits the column is masked, unless the refusal is in
-//     valueRefusals
+//     valueRefusals; keep never refuses a value the database holds, and
+//     noise masks a decimal that fits once rounded to its column's scale
 //  4. no error shows the value: leaked reports whether a message does, for
 //     in and for marked, a variant of in that carries a marker
 //
@@ -70,6 +72,10 @@ func checkMasking(t *testing.T, k *Keys, col Column, rule Rule, in, marked value
 		t.Fatalf("%s: one value is masked once and refused once: %v / %v / %v", what, err, againErr, thirdErr)
 	case err == nil && (!out.Equal(again) || !out.Equal(third)):
 		t.Fatalf("%s: one value gives two outputs", what)
+	case err != nil && rule.Use == "keep" && !emptyAsNull(col, in):
+		t.Fatalf("%s: keep refused a value the database holds: %v", what, err)
+	case err != nil && rule.Use == "noise" && fitsAtScale(col, in):
+		t.Fatalf("%s: noise refused a decimal that fits its column at the column's scale: %v", what, err)
 	case err != nil && fits(col, in) && !isValueRefusal(err):
 		t.Fatalf("%s: a value that fits the column is refused: %v", what, err)
 	}
@@ -83,6 +89,32 @@ func fits(col Column, in value.Value) bool {
 		return false
 	}
 	return natural(col.Type, in.Kind()) && col.Type.Check(in) == nil
+}
+
+// emptyAsNull reports whether in is an empty string that the engine would
+// store as NULL in a NOT NULL column, which no database holds.
+func emptyAsNull(col Column, in value.Value) bool {
+	return col.EmptyStringIsNull && !col.Nullable && in.Kind() == value.KindString && in.Text() == ""
+}
+
+// fitsAtScale reports whether in is a decimal with more decimal places than
+// its column declares, as SQLite keeps them, that fits the column once
+// rounded to the column's scale, as another database would store it.
+func fitsAtScale(col Column, in value.Value) bool {
+	t := col.Type
+	if t.Kind != value.TypeDecimal || t.Precision == 0 || t.Scale < 0 || in.Kind() != value.KindDecimal || in.Special() != value.Normal {
+		return false
+	}
+	_, frac, _ := strings.Cut(in.DecimalText(), ".")
+	if len(frac) <= t.Scale {
+		return false
+	}
+	r, ok := new(big.Rat).SetString(in.DecimalText())
+	if !ok {
+		return false
+	}
+	rounded, err := value.Decimal(decimalText(roundHalfAway(r, t.Scale), t.Scale))
+	return err == nil && t.Check(rounded) == nil
 }
 
 func isValueRefusal(err error) bool {
@@ -206,6 +238,15 @@ func FuzzMaskNumber(f *testing.F) {
 	for _, d := range []string{"0.0099", "0.0098", "0.0095", "-0.0099"} {
 		f.Add(int64(0), uint64(0), float64(0), d, uint8(1), uint8(0), uint8(2), int8(4), uint8(0), uint8(1), uint16(50))
 	}
+	// More decimal places than the column declares, as SQLite keeps floats.
+	for _, c := range []struct {
+		d                string
+		precision, scale uint8
+	}{
+		{"0.30000000000000004", 12, 2}, {"5.0", 19, 0}, {"0.9999999999999999", 10, 0}, {"99.999", 4, 2}, {"-0.005", 3, 2},
+	} {
+		f.Add(int64(0), uint64(0), float64(0), c.d, uint8(1), uint8(0), c.precision, int8(c.scale), uint8(0), uint8(1), uint16(100))
+	}
 	k := testKeys(f)
 	f.Fuzz(func(t *testing.T, i int64, u uint64, fl float64, d string, kind, bits, precision uint8, scale int8, flags, set uint8, n uint16) {
 		var typ value.Type
@@ -240,26 +281,11 @@ func FuzzMaskNumber(f *testing.F) {
 		if typ.Validate() != nil {
 			return
 		}
-		if beyondScale(typ, in) {
-			return // no database returns it
-		}
 		text := numberText(in)
 		leaked := func(msg string) bool { return len(text) >= 6 && strings.Contains(msg, text) }
 		col := fuzzColumn(typ, flags)
 		eachRule(col, flags, set, n, d, func(r Rule) { checkMasking(t, k, col, r, in, in, leaked) })
 	})
-}
-
-// beyondScale reports whether a decimal has more decimal places than its
-// column's scale, such as 5.0 in decimal(19,0). Check accepts it (it is
-// the number 5), but databases return a column's values at its scale, and
-// noise keeps a value's own decimal places.
-func beyondScale(typ value.Type, in value.Value) bool {
-	if typ.Kind != value.TypeDecimal || typ.Precision == 0 || in.Kind() != value.KindDecimal || in.Special() != value.Normal {
-		return false
-	}
-	_, frac, _ := strings.Cut(in.DecimalText(), ".")
-	return len(frac) > max(typ.Scale, 0)
 }
 
 // numberText is how an error would show a number, if it showed one.

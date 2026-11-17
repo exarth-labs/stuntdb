@@ -224,7 +224,7 @@ func optionDiffs(t *Transformer, cols []ColumnRule, members []int, distinct bool
 	byOption := map[string]map[string][]schema.ColumnRef{}
 	for _, i := range members {
 		c := cols[i]
-		_, resolved, err := t.configure(c.Column.Type.Kind, c.Rule.Options, distinct)
+		_, resolved, err := t.configure(c.Column.Type, c.Rule.Options, distinct)
 		if err != nil {
 			continue
 		}
@@ -315,7 +315,7 @@ func fitsAlike(t *Transformer, types []value.Type, distinct bool) bool {
 		if !t.MasksAlike(types[0], typ) {
 			return false
 		}
-		f, _, err := t.configure(typ.Kind, nil, distinct)
+		f, _, err := t.configure(typ, nil, distinct)
 		if err != nil || (distinct && f.guarantee == None) {
 			return false
 		}
