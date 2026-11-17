@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -171,45 +172,67 @@ INSERT INTO pair VALUES ('x', 1), ('x', 0.5), ('x', 'n/a'), ('10', 2), ('9', 2),
 
 // TestNullablePrimaryKey checks that a SQLite primary key that can hold
 // NULLs is not used to identify rows, and that a read of the whole table
-// returns its NULL rows.
+// returns its NULL rows. A column declared INTEGER PRIMARY KEY DESC is not
+// the rowid and holds NULLs; PRIMARY KEY (id DESC), a table constraint, is
+// the rowid.
 func TestNullablePrimaryKey(t *testing.T) {
+	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "codes.db")
 	rawExec(t, path, `
 CREATE TABLE codes (code TEXT PRIMARY KEY, label TEXT);
 INSERT INTO codes VALUES (NULL, 'x'), (NULL, 'y'), ('a', 'z');
 CREATE TABLE tagged (code TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE);
 CREATE TABLE numbered (id INTEGER PRIMARY KEY, code TEXT);
+CREATE TABLE descending (id INTEGER PRIMARY KEY DESC, label TEXT);
+INSERT INTO descending VALUES (NULL, 'x'), (NULL, 'y'), (5, 'z');
+CREATE TABLE descending_key (id INTEGER, label TEXT, PRIMARY KEY (id DESC));
+CREATE TABLE ascending (id INTEGER PRIMARY KEY ASC, label TEXT);
+CREATE TABLE descending_not_null (id INTEGER NOT NULL PRIMARY KEY DESC, label TEXT);
 `)
 	conn := openConn(t, path, dialect.Source)
-	db, err := conn.Introspect(context.Background(), dialect.Filter{})
+	db, err := conn.Introspect(ctx, dialect.Filter{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	ns := db.Namespace("main")
-	if key := ns.Table("codes").IdentityKey(); key != nil {
-		t.Errorf("codes, whose TEXT PRIMARY KEY holds NULLs: IdentityKey() = %v, want none", key)
+	for _, c := range []struct {
+		table schema.Ident
+		key   []schema.Ident
+		rowid bool
+	}{
+		{"codes", nil, false},
+		{"tagged", ids("email"), false},
+		{"numbered", ids("id"), true},
+		{"descending", nil, false},
+		{"descending_key", ids("id"), true},
+		{"ascending", ids("id"), true},
+		{"descending_not_null", ids("id"), false},
+	} {
+		tbl := ns.Table(c.table)
+		if key := tbl.IdentityKey(); !slices.Equal(key, c.key) {
+			t.Errorf("%s: IdentityKey() = %v, want %v", c.table, key, c.key)
+		}
+		if rowid := tbl.Column(tbl.PrimaryKey.Columns[0]).Identity != nil; rowid != c.rowid {
+			t.Errorf("%s: primary key taken for the rowid = %v, want %v", c.table, rowid, c.rowid)
+		}
 	}
-	if key := ns.Table("tagged").IdentityKey(); !slices.Equal(key, ids("email")) {
-		t.Errorf("tagged: IdentityKey() = %v, want the NOT NULL unique email", key)
-	}
-	if key := ns.Table("numbered").IdentityKey(); !slices.Equal(key, ids("id")) {
-		t.Errorf("numbered: IdentityKey() = %v, want its INTEGER PRIMARY KEY", key)
-	}
-	snap, err := conn.Snapshot(context.Background())
+	snap, err := conn.Snapshot(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = snap.Close() }()
-	it, err := snap.Read(context.Background(), dialect.ReadQuery{Table: schema.TableRef{Namespace: "main", Name: "codes"}, Columns: ids("code", "label")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = it.Close() }()
-	n := 0
-	for it.Next() {
-		n++
-	}
-	if err := it.Err(); err != nil || n != 3 {
-		t.Errorf("reading codes whole returned %d rows (%v), want 3", n, err)
+	for _, table := range []schema.Ident{"codes", "descending"} {
+		key := ns.Table(table).PrimaryKey.Columns[0]
+		it, err := snap.Read(ctx, dialect.ReadQuery{Table: schema.TableRef{Namespace: "main", Name: table}, Columns: []schema.Ident{key, "label"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		n := 0
+		for it.Next() {
+			n++
+		}
+		if err := errors.Join(it.Err(), it.Close()); err != nil || n != 3 {
+			t.Errorf("reading %s whole returned %d rows (%v), want 3", table, n, err)
+		}
 	}
 }
