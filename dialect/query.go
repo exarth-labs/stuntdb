@@ -23,7 +23,10 @@ type ReadQuery struct {
 	// reproducible and After can continue where an earlier read stopped.
 	// Rows are compared the way the engine compares them (its collation), so
 	// stuntdb never compares key values itself; it only passes back the last
-	// key it saw.
+	// key it saw. When OrderBy is a unique key's columns, the adapter sorts,
+	// and After compares, with that key's own collations, under which no two
+	// rows tie: a key unique under BINARY on a case-insensitive column holds
+	// both 'a' and 'A', and a chunk ending at one would skip the other.
 	OrderBy []schema.Ident
 
 	// Limit caps the number of rows. 0 means no limit. A limit needs OrderBy.
