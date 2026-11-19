@@ -22,6 +22,7 @@ type snapshot struct {
 
 	mu    sync.Mutex
 	types map[schema.TableRef]map[schema.Ident]value.Type
+	keys  map[schema.TableRef][]uniqueKey
 }
 
 func newSnapshot(ctx context.Context, db *sql.DB) (*snapshot, error) {
@@ -38,7 +39,11 @@ func newSnapshot(ctx context.Context, db *sql.DB) (*snapshot, error) {
 		_ = tx.Rollback()
 		return nil, fmt.Errorf("sqlite: start a snapshot: %w", err)
 	}
-	return &snapshot{tx: tx, maxKeys: maxKeyValues, types: map[schema.TableRef]map[schema.Ident]value.Type{}}, nil
+	return &snapshot{
+		tx: tx, maxKeys: maxKeyValues,
+		types: map[schema.TableRef]map[schema.Ident]value.Type{},
+		keys:  map[schema.TableRef][]uniqueKey{},
+	}, nil
 }
 
 // Point returns an empty string: SQLite has no log position that names the
@@ -59,7 +64,14 @@ func (s *snapshot) Close() error {
 }
 
 func (s *snapshot) Read(ctx context.Context, q dialect.ReadQuery) (dialect.RowIter, error) {
-	stmt, err := renderRead(q, s.maxKeys)
+	var keys []uniqueKey
+	if len(q.OrderBy) > 0 || hasAfter(q.Where) {
+		var err error
+		if keys, err = s.uniqueKeys(ctx, q.Table); err != nil {
+			return nil, err
+		}
+	}
+	stmt, err := renderRead(q, s.maxKeys, keys)
 	if err != nil {
 		return nil, err
 	}
@@ -117,6 +129,66 @@ func (s *snapshot) columnTypes(ctx context.Context, ref schema.TableRef) (map[sc
 	}
 	s.types[ref] = types
 	return types, nil
+}
+
+// uniqueKeys returns a table's unique keys over plain columns, without the
+// partial ones (they don't cover every row): the primary key first, then
+// constraints, then indexes. An INTEGER PRIMARY KEY is the rowid and has no
+// index; it holds only integers, which no collation affects.
+func (s *snapshot) uniqueKeys(ctx context.Context, ref schema.TableRef) ([]uniqueKey, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if keys, ok := s.keys[ref]; ok {
+		return keys, nil
+	}
+	rows, err := s.tx.QueryContext(ctx, `
+SELECT il.name, ix.cid, ix.name, ix.coll
+FROM pragma_index_list(?, ?) AS il, pragma_index_xinfo(il.name, ?) AS ix
+WHERE il."unique" = 1 AND il.partial = 0 AND ix.key = 1
+ORDER BY CASE il.origin WHEN 'pk' THEN 0 WHEN 'u' THEN 1 ELSE 2 END, il.name, ix.seqno`,
+		string(ref.Name), string(ref.Namespace), string(ref.Namespace))
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: read %s: %w", ref, err)
+	}
+	defer func() { _ = rows.Close() }()
+	var (
+		keys    []uniqueKey
+		index   string
+		cur     uniqueKey
+		plain   bool
+		started bool
+	)
+	flush := func() {
+		if started && plain {
+			keys = append(keys, cur)
+		}
+	}
+	for rows.Next() {
+		var (
+			name, coll string
+			cid        int64
+			column     sql.NullString
+		)
+		if err := rows.Scan(&name, &cid, &column, &coll); err != nil {
+			return nil, fmt.Errorf("sqlite: read %s: %w", ref, err)
+		}
+		if !started || name != index {
+			flush()
+			index, cur, plain, started = name, uniqueKey{}, true, true
+		}
+		if cid < 0 || !column.Valid {
+			plain = false // an expression or the rowid
+			continue
+		}
+		cur.columns = append(cur.columns, schema.Ident(column.String))
+		cur.collations = append(cur.collations, coll)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlite: read %s: %w", ref, err)
+	}
+	flush()
+	s.keys[ref] = keys
+	return keys, nil
 }
 
 // rows streams the rows of one read, converting each value.

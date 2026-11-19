@@ -170,6 +170,192 @@ INSERT INTO pair VALUES ('x', 1), ('x', 0.5), ('x', 'n/a'), ('10', 2), ('9', 2),
 	}
 }
 
+// TestKeysetFollowsTheKeysCollation reads, in chunks along its identity
+// key, tables whose key is unique under another collation than its
+// column's, so that the column's collation counts some keys as equal. Every
+// row must come back once, and each chunk must seek the key's index rather
+// than sort the table.
+func TestKeysetFollowsTheKeysCollation(t *testing.T) {
+	const triples = `
+WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 40)
+INSERT INTO t (k) SELECT printf('ab%03d', i) FROM n UNION ALL SELECT printf('aB%03d', i) FROM n UNION ALL SELECT printf('Ab%03d', i) FROM n;`
+	cases := []struct {
+		name, ddl, data string
+		key             []schema.Ident
+	}{
+		{"unique index", `CREATE TABLE t (k TEXT NOT NULL COLLATE NOCASE, v TEXT); CREATE UNIQUE INDEX t_k ON t (k COLLATE BINARY);`, triples, ids("k")},
+		{"unique constraint", `CREATE TABLE t (k TEXT NOT NULL COLLATE NOCASE, v TEXT, UNIQUE (k COLLATE BINARY));`, triples, ids("k")},
+		{"primary key", `CREATE TABLE t (k TEXT NOT NULL COLLATE NOCASE, v TEXT, PRIMARY KEY (k COLLATE BINARY));`, triples, ids("k")},
+		{"primary key without rowid", `CREATE TABLE t (k TEXT NOT NULL COLLATE NOCASE, v TEXT, PRIMARY KEY (k COLLATE BINARY)) WITHOUT ROWID;`, triples, ids("k")},
+		{
+			"trailing spaces", `CREATE TABLE t (k TEXT NOT NULL COLLATE RTRIM, v TEXT, UNIQUE (k COLLATE BINARY));`, `
+WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 40)
+INSERT INTO t (k) SELECT printf('a%03d', i) FROM n UNION ALL SELECT printf('a%03d ', i) FROM n UNION ALL SELECT printf('a%03d  ', i) FROM n;`,
+			ids("k"),
+		},
+		{
+			"a case-insensitive key on a binary column", `CREATE TABLE t (k TEXT NOT NULL, v TEXT, UNIQUE (k COLLATE NOCASE));`, `
+WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 120)
+INSERT INTO t (k) SELECT CASE i % 2 WHEN 0 THEN printf('k%03d', i) ELSE printf('K%03d', i) END FROM n;`,
+			ids("k"),
+		},
+		{
+			"composite key with mixed collations", `CREATE TABLE t (a TEXT NOT NULL COLLATE NOCASE, b TEXT NOT NULL COLLATE NOCASE, v TEXT, UNIQUE (a COLLATE BINARY, b));`, `
+WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 40)
+INSERT INTO t (a, b) SELECT printf('x%03d', i), 'p' FROM n UNION ALL SELECT printf('X%03d', i), 'p' FROM n UNION ALL SELECT printf('x%03d', i), 'q' FROM n;`,
+			ids("a", "b"),
+		},
+		{
+			// If the partial index were taken, its NOCASE would tie 'k…' and 'K…'.
+			"a partial key is not used", `CREATE TABLE t (k TEXT NOT NULL, v TEXT);
+CREATE UNIQUE INDEX a_part ON t (k COLLATE NOCASE) WHERE k > 'z';
+CREATE UNIQUE INDEX b_full ON t (k);`, `
+WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 40)
+INSERT INTO t (k) SELECT printf('k%03d', i) FROM n UNION ALL SELECT printf('K%03d', i) FROM n;`,
+			ids("k"),
+		},
+		{
+			"an index that isn't unique is not used", `CREATE TABLE t (k TEXT NOT NULL, v TEXT);
+CREATE INDEX a_any ON t (k COLLATE NOCASE);
+CREATE UNIQUE INDEX b_full ON t (k);`, `
+WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 40)
+INSERT INTO t (k) SELECT printf('k%03d', i) FROM n UNION ALL SELECT printf('K%03d', i) FROM n;`,
+			ids("k"),
+		},
+		{
+			// The same, if the expression were dropped from the key.
+			"an expression key is not used", `CREATE TABLE t (k TEXT NOT NULL, v TEXT);
+CREATE UNIQUE INDEX a_expr ON t (k COLLATE NOCASE, unicode(k));
+CREATE UNIQUE INDEX b_full ON t (k);`, `
+WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 40)
+INSERT INTO t (k) SELECT printf('k%03d', i) FROM n UNION ALL SELECT printf('K%03d', i) FROM n;`,
+			ids("k"),
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ctx := t.Context()
+			path := filepath.Join(t.TempDir(), "keys.db")
+			rawExec(t, path, c.ddl+c.data)
+			conn := openConn(t, path, dialect.Source)
+			db, err := conn.Introspect(ctx, dialect.Filter{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := db.Namespace("main").Table("t").IdentityKey(); !slices.Equal(got, c.key) {
+				t.Fatalf("identity key %v, want %v", got, c.key)
+			}
+			raw, err := sql.Open("sqlite", path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = raw.Close() }()
+			joined := "SELECT " + strings.Join(quoteAll(c.key), " || '|' || ") + " FROM t"
+			want := queryStrings(t, raw, joined)
+			slices.Sort(want)
+
+			s, err := conn.Snapshot(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = s.Close() }()
+			ref := schema.TableRef{Namespace: "main", Name: "t"}
+			for _, limit := range []int{1, 2, 7} {
+				var got []string
+				var last []value.Value
+				for range len(want) + 1 {
+					q := dialect.ReadQuery{Table: ref, Columns: c.key, OrderBy: c.key, Limit: limit}
+					if last != nil {
+						q.Where = dialect.After{Columns: c.key, Key: last}
+					}
+					chunk := readAll(t, s, q)
+					if len(chunk) == 0 {
+						break
+					}
+					for _, row := range chunk {
+						parts := make([]string, len(row))
+						for i, v := range row {
+							parts[i] = v.Text()
+						}
+						got = append(got, strings.Join(parts, "|"))
+					}
+					last = chunk[len(chunk)-1]
+				}
+				slices.Sort(got)
+				if !slices.Equal(got, want) {
+					t.Fatalf("in chunks of %d: %d rows, want the %d of the table, each once", limit, len(got), len(want))
+				}
+			}
+
+			// A chunk after the first seeks the key's index.
+			keys, err := s.(*snapshot).uniqueKeys(ctx, ref)
+			if err != nil {
+				t.Fatal(err)
+			}
+			first := readAll(t, s, dialect.ReadQuery{Table: ref, Columns: c.key, OrderBy: c.key, Limit: 1})
+			stmt, err := renderRead(dialect.ReadQuery{
+				Table: ref, Columns: c.key, OrderBy: c.key, Limit: 10,
+				Where: dialect.After{Columns: c.key, Key: first[0]},
+			}, maxKeyValues, keys)
+			if err != nil {
+				t.Fatal(err)
+			}
+			plan := queryPlan(t, raw, stmt)
+			if !strings.Contains(plan, "SEARCH") || strings.Contains(plan, "TEMP B-TREE") {
+				t.Errorf("a chunk doesn't seek the key's index: %s", plan)
+			}
+		})
+	}
+}
+
+// queryPlan returns how SQLite runs stmt, one step per line.
+func queryPlan(t *testing.T, db *sql.DB, stmt statement) string {
+	t.Helper()
+	rows, err := db.Query("EXPLAIN QUERY PLAN "+stmt.sql, stmt.args...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rows.Close() }()
+	var steps []string
+	for rows.Next() {
+		var id, parent, unused int64
+		var detail string
+		if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+			t.Fatal(err)
+		}
+		steps = append(steps, detail)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return strings.Join(steps, "\n")
+}
+
+func quoteAll(names []schema.Ident) []string {
+	quoted := make([]string, len(names))
+	for i, n := range names {
+		quoted[i] = quote(n)
+	}
+	return quoted
+}
+
+func readAll(t *testing.T, s dialect.Snapshot, q dialect.ReadQuery) [][]value.Value {
+	t.Helper()
+	it, err := s.Read(t.Context(), q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = it.Close() }()
+	var out [][]value.Value
+	for it.Next() {
+		out = append(out, slices.Clone(it.Row()))
+	}
+	if err := it.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
 // TestNullablePrimaryKey checks that a SQLite primary key that can hold
 // NULLs is not used to identify rows, and that a read of the whole table
 // returns its NULL rows. A column declared INTEGER PRIMARY KEY DESC is not

@@ -89,7 +89,7 @@ func TestRenderRead(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			stmt, err := renderRead(tt.q, maxKeyValues)
+			stmt, err := renderRead(tt.q, maxKeyValues, nil)
 			if err != nil {
 				t.Fatalf("renderRead: %v", err)
 			}
@@ -100,6 +100,52 @@ func TestRenderRead(t *testing.T) {
 				t.Errorf("%d arguments, want %d", len(stmt.args), tt.nargs)
 			}
 		})
+	}
+}
+
+// TestRenderReadUsesTheKeysCollation checks that a read ordered by a unique
+// key sorts and compares with the key's collations, in the read's column
+// order, and that other reads are left as they are.
+func TestRenderReadUsesTheKeysCollation(t *testing.T) {
+	users := schema.TableRef{Namespace: "main", Name: "users"}
+	keys := []uniqueKey{
+		{columns: ids("email"), collations: []string{"NOCASE"}},
+		{columns: ids("a", "b"), collations: []string{"BINARY", `we"ird`}},
+	}
+	page := func(key ...schema.Ident) dialect.ReadQuery {
+		last := make([]value.Value, len(key))
+		for i := range last {
+			last[i] = value.String("x")
+		}
+		return dialect.ReadQuery{Table: users, Columns: key, OrderBy: key, Limit: 10, Where: dialect.After{Columns: key, Key: last}}
+	}
+	tests := []struct {
+		name string
+		q    dialect.ReadQuery
+		want string
+	}{
+		{"one column", page("email"), `SELECT +"email" FROM "main"."users" WHERE "email" > ? COLLATE "NOCASE" ORDER BY "email" COLLATE "NOCASE" LIMIT 10`},
+		{"two columns", page("a", "b"), `SELECT +"a", +"b" FROM "main"."users" WHERE ("a", "b") > (? COLLATE "BINARY", ? COLLATE "we""ird") ORDER BY "a" COLLATE "BINARY", "b" COLLATE "we""ird" LIMIT 10`},
+		{"the key's columns in another order", page("b", "a"), `SELECT +"b", +"a" FROM "main"."users" WHERE ("b", "a") > (? COLLATE "we""ird", ? COLLATE "BINARY") ORDER BY "b" COLLATE "we""ird", "a" COLLATE "BINARY" LIMIT 10`},
+		{"part of a key", page("a"), `SELECT +"a" FROM "main"."users" WHERE "a" > ? ORDER BY "a" LIMIT 10`},
+		{"a column twice", page("a", "a"), `SELECT +"a", +"a" FROM "main"."users" WHERE ("a", "a") > (?, ?) ORDER BY "a", "a" LIMIT 10`},
+		{"more than a key", page("a", "b", "email"), `SELECT +"a", +"b", +"email" FROM "main"."users" WHERE ("a", "b", "email") > (?, ?, ?) ORDER BY "a", "b", "email" LIMIT 10`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stmt, err := renderRead(tt.q, maxKeyValues, keys)
+			if err != nil {
+				t.Fatalf("renderRead: %v", err)
+			}
+			if stmt.sql != tt.want {
+				t.Errorf("SQL =\n  %s\nwant\n  %s", stmt.sql, tt.want)
+			}
+		})
+	}
+	nested := page("email")
+	nested.Where = dialect.And{dialect.Native{SQL: "1"}, nested.Where}
+	if !hasAfter(nested.Where) || hasAfter(dialect.And{dialect.Native{SQL: "1"}}) || hasAfter(nil) {
+		t.Error("hasAfter doesn't find After inside And, or finds one that isn't there")
 	}
 }
 
@@ -118,14 +164,14 @@ func TestRenderReadRefusesTooManyKeys(t *testing.T) {
 		}
 	}
 	// A limit of 4 values fits two keys of two columns; the After key doesn't count.
-	stmt, err := renderRead(q(2), 4)
+	stmt, err := renderRead(q(2), 4, nil)
 	if err != nil {
 		t.Fatalf("two keys, within the limit: %v", err)
 	}
 	if len(stmt.args) != 5 {
 		t.Errorf("%d arguments, want 5", len(stmt.args))
 	}
-	if _, err := renderRead(q(3), 4); !errors.Is(err, dialect.ErrTooManyKeys) {
+	if _, err := renderRead(q(3), 4, nil); !errors.Is(err, dialect.ErrTooManyKeys) {
 		t.Errorf("three keys, over the limit = %v, want ErrTooManyKeys", err)
 	}
 	if maxParams-maxKeyValues < 100 {

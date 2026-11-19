@@ -49,7 +49,10 @@ type statement struct {
 // value, but hides the declared type from the driver, which would otherwise
 // turn text in DATE, DATETIME and TIMESTAMP columns into time.Time and lose
 // the original text.
-func renderRead(q dialect.ReadQuery, limit int) (statement, error) {
+//
+// keys are the table's unique keys. A read ordered by one of them sorts and
+// compares with the key's own collations, as After requires.
+func renderRead(q dialect.ReadQuery, limit int, keys []uniqueKey) (statement, error) {
 	if err := q.Validate(); err != nil {
 		return statement{}, err
 	}
@@ -69,14 +72,19 @@ func renderRead(q dialect.ReadQuery, limit int) (statement, error) {
 
 	var args []any
 	if q.Where != nil {
-		where, err := renderPredicate(q.Where, &args)
+		where, err := renderPredicate(q.Where, &args, keys)
 		if err != nil {
 			return statement{}, fmt.Errorf("sqlite: read %s: %w", q.Table, err)
 		}
 		b.WriteString(" WHERE " + where)
 	}
 	if len(q.OrderBy) > 0 {
-		b.WriteString(" ORDER BY " + quoteList(q.OrderBy))
+		coll := keyCollations(keys, q.OrderBy)
+		order := make([]string, len(q.OrderBy))
+		for i, c := range q.OrderBy {
+			order[i] = quote(c) + collateClause(coll, i)
+		}
+		b.WriteString(" ORDER BY " + strings.Join(order, ", "))
 	}
 	if q.Limit > 0 {
 		b.WriteString(" LIMIT " + strconv.Itoa(q.Limit))
@@ -112,7 +120,60 @@ func withoutNullKeys(keys [][]value.Value) [][]value.Value {
 	return kept
 }
 
-func renderPredicate(p dialect.Predicate, args *[]any) (string, error) {
+// uniqueKey is a unique index's columns and the collation each is compared
+// with. Its values are distinct under its own collations only: a NOCASE
+// column with a UNIQUE (name COLLATE BINARY) key holds both 'a' and 'A'.
+type uniqueKey struct {
+	columns    []schema.Ident
+	collations []string
+}
+
+// keyCollations returns the collations of the first key in keys over
+// exactly columns, in any order, or nil when there is none.
+func keyCollations(keys []uniqueKey, columns []schema.Ident) []string {
+	for _, k := range keys {
+		if len(k.columns) != len(columns) {
+			continue
+		}
+		coll := make([]string, len(columns))
+		used := make([]bool, len(k.columns))
+		match := true
+		for i, c := range columns {
+			at := slices.Index(k.columns, c)
+			if at < 0 || used[at] {
+				match = false
+				break
+			}
+			used[at] = true
+			coll[i] = k.collations[at]
+		}
+		if match {
+			return coll
+		}
+	}
+	return nil
+}
+
+func collateClause(coll []string, i int) string {
+	if coll == nil {
+		return ""
+	}
+	return " COLLATE " + quote(schema.Ident(coll[i]))
+}
+
+// hasAfter reports whether p holds an After condition.
+func hasAfter(p dialect.Predicate) bool {
+	switch p := p.(type) {
+	case dialect.After:
+		return true
+	case dialect.And:
+		return slices.ContainsFunc(p, hasAfter)
+	default:
+		return false
+	}
+}
+
+func renderPredicate(p dialect.Predicate, args *[]any, keys []uniqueKey) (string, error) {
 	switch p := p.(type) {
 	case dialect.KeysIn:
 		keys := withoutNullKeys(p.Keys)
@@ -146,10 +207,18 @@ func renderPredicate(p dialect.Predicate, args *[]any) (string, error) {
 		if err := appendArgs(args, p.Key); err != nil {
 			return "", err
 		}
-		if len(p.Columns) == 1 {
-			return quote(p.Columns[0]) + " > ?", nil
+		// The collation goes on the value, not the column: SQLite uses an
+		// explicit COLLATE on either side, but one on a column of a row
+		// value stops it from seeking the index.
+		coll := keyCollations(keys, p.Columns)
+		params := make([]string, len(p.Key))
+		for i := range params {
+			params[i] = "?" + collateClause(coll, i)
 		}
-		return "(" + quoteList(p.Columns) + ") > (" + placeholders(len(p.Key)) + ")", nil
+		if len(p.Columns) == 1 {
+			return quote(p.Columns[0]) + " > " + params[0], nil
+		}
+		return "(" + quoteList(p.Columns) + ") > (" + strings.Join(params, ", ") + ")", nil
 	case dialect.Native:
 		return "(" + p.SQL + ")", nil
 	case dialect.And:
@@ -158,7 +227,7 @@ func renderPredicate(p dialect.Predicate, args *[]any) (string, error) {
 		}
 		parts := make([]string, len(p))
 		for i, sub := range p {
-			s, err := renderPredicate(sub, args)
+			s, err := renderPredicate(sub, args, keys)
 			if err != nil {
 				return "", err
 			}
