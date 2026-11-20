@@ -10,7 +10,9 @@
 //     and one load per table, as COPY streams a table in one statement;
 //   - an empty string is stored as NULL, as in Oracle;
 //   - unquoted names fold to upper case, as in Oracle;
-//   - foreign keys and unique keys are checked only in Finish, after loading;
+//   - foreign keys and unique keys are checked only in Finish, after loading,
+//     comparing text as each key's collations do (schema.Equality), so a
+//     foreign key holding 'BOB' matches 'bob' under a key that ignores case;
 //   - at most MaxParams key values per read, so callers must send long key
 //     lists in batches, and Statements counts the reads;
 //   - rows come back in a reused slice, so callers that keep references break;
@@ -547,7 +549,7 @@ func (l *loader) Finish(context.Context, *schema.Database) error {
 				keys = append(keys, t.PrimaryKey)
 			}
 			for _, k := range keys {
-				if dup := l.duplicates(t, rows, k.Columns); dup > 0 {
+				if dup := l.duplicates(t, rows, k); dup > 0 {
 					problems = append(problems, fmt.Errorf("fakedb: %d duplicate keys on (%s) of %s", dup, joinIdents(k.Columns), ref))
 				}
 			}
@@ -564,12 +566,16 @@ func (l *loader) Finish(context.Context, *schema.Database) error {
 	return errors.Join(problems...)
 }
 
-func (l *loader) duplicates(t *schema.Table, rows [][]value.Value, cols []schema.Ident) int {
-	idx, _ := columnIndexes(t, cols)
+func (l *loader) duplicates(t *schema.Table, rows [][]value.Value, k *schema.Key) int {
+	idx, _ := columnIndexes(t, k.Columns)
+	eqs := make([]schema.Equality, len(k.Columns))
+	for i := range eqs {
+		eqs[i] = k.Collation(i).Equality
+	}
 	var dup int
 	for i := range rows {
 		for j := range i {
-			if equalNonNull(pick(rows[i], idx), pick(rows[j], idx)) {
+			if equalNonNull(folded(pick(rows[i], idx), eqs), folded(pick(rows[j], idx), eqs)) {
 				dup++
 				break
 			}
@@ -590,8 +596,10 @@ func (l *loader) missingParents(t *schema.Table, rows [][]value.Value, fk *schem
 		found := false
 		if parent != nil {
 			parentIdx, _ := columnIndexes(parent, fk.RefColumns)
+			eqs := keyEqualities(parent, fk.RefColumns)
+			key := folded(key, eqs)
 			for _, prow := range l.staging.rows[fk.Ref] {
-				if equalNonNull(pick(prow, parentIdx), key) {
+				if equalNonNull(folded(pick(prow, parentIdx), eqs), key) {
 					found = true
 					break
 				}
@@ -602,6 +610,54 @@ func (l *loader) missingParents(t *schema.Table, rows [][]value.Value, fk *schem
 		}
 	}
 	return missing
+}
+
+// keyEqualities returns how the parent's unique key over columns compares
+// each of them: the referenced key's collations decide a foreign key, as in
+// every engine.
+func keyEqualities(parent *schema.Table, columns []schema.Ident) []schema.Equality {
+	out := make([]schema.Equality, len(columns))
+	same := func(cols []schema.Ident, coll func(int) schema.Collation) bool {
+		if len(cols) != len(columns) {
+			return false
+		}
+		for i, c := range columns {
+			at := slices.Index(cols, c)
+			if at < 0 {
+				return false
+			}
+			out[i] = coll(at).Equality
+		}
+		return true
+	}
+	if parent.PrimaryKey != nil && same(parent.PrimaryKey.Columns, parent.PrimaryKey.Collation) {
+		return out
+	}
+	for _, k := range parent.Uniques {
+		if same(k.Columns, k.Collation) {
+			return out
+		}
+	}
+	for _, ix := range parent.Indexes {
+		if ix.Unique && same(ix.Columns, ix.Collation) {
+			return out
+		}
+	}
+	return make([]schema.Equality, len(columns))
+}
+
+// folded returns key with each text folded as its column's key compares
+// it. fakedb compares a collation of the kind EqualOther as bytes.
+func folded(key []value.Value, eqs []schema.Equality) []value.Value {
+	out := slices.Clone(key)
+	for i, v := range out {
+		if v.Kind() == value.KindString {
+			if f, ok := eqs[i].Fold(v.Text()); ok {
+				out[i] = value.String(f)
+			}
+		}
+	}
+	return out
 }
 
 func (l *loader) Commit(context.Context) error {

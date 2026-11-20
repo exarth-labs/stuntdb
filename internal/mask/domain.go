@@ -29,6 +29,10 @@ type ColumnRule struct {
 //     unique value column, and cleared on every other column. A Per column
 //     neither gets nor gives it: it can't be unique, and nothing may
 //     reference it, but by default it shares its key's domain.
+//   - Equality is set like Distinct, from the domain's unique text
+//     columns, which must all compare text alike when the transformer's
+//     outputs come from the value: one fake value can't fit both a key
+//     that ignores case and one that doesn't.
 //   - The value columns of a domain use the same transformer with the same
 //     options, after their defaults are filled in, in column types the
 //     transformer masks alike (Transformer.MasksAlike). That transformer
@@ -60,7 +64,7 @@ func ResolveDomains(cols []ColumnRule) ([]Rule, error) {
 		}
 		seen[ref] = true
 		r := c.Rule
-		r.Distinct = false
+		r.Distinct, r.Equality = false, schema.EqualBytes
 		rules[i] = r
 		domain := r.DomainFor(ref)
 		if r.Per == "" {
@@ -72,10 +76,14 @@ func ResolveDomains(cols []ColumnRule) ([]Rule, error) {
 	}
 	for domain, members := range values {
 		distinct := slices.ContainsFunc(members, func(i int) bool { return cols[i].Column.Unique })
-		for _, i := range members {
-			rules[i].Distinct = distinct
+		eq, p := domainEquality(domain, cols, members)
+		if p != "" {
+			problems = append(problems, p)
 		}
-		if p := checkDomain(domain, cols, members, distinct); p != "" {
+		for _, i := range members {
+			rules[i].Distinct, rules[i].Equality = distinct, eq
+		}
+		if p := checkDomain(domain, cols, members, distinct, eq); p != "" {
 			problems = append(problems, p)
 		}
 	}
@@ -134,11 +142,48 @@ func usable(c ColumnRule) (*Transformer, bool) {
 	return t, true
 }
 
+// domainEquality returns when the unique text columns of a domain count two
+// values as equal, or a problem when they don't agree and the domain's
+// transformer masks from the value. A domain without one compares bytes.
+// The kinds must be the same, not merely comparable: folding by NOCASE
+// would give 'a' and 'A' in a BINARY unique column one fake value.
+func domainEquality(domain string, cols []ColumnRule, members []int) (schema.Equality, string) {
+	byKind := map[schema.Equality][]string{}
+	for _, i := range members {
+		c := cols[i].Column
+		t, ok := usable(cols[i])
+		if !ok || !t.UsesDomain() || !c.Unique || !isText(c.Type) {
+			continue
+		}
+		name := c.Ref.String()
+		if c.Collation != "" {
+			name += " (" + c.Collation + ")"
+		}
+		byKind[c.Equality] = append(byKind[c.Equality], name)
+	}
+	switch len(byKind) {
+	case 0:
+		return schema.EqualBytes, ""
+	case 1:
+		for eq := range byKind {
+			return eq, ""
+		}
+	}
+	var parts []string
+	for _, eq := range slices.Sorted(maps.Keys(byKind)) {
+		names := byKind[eq]
+		slices.Sort(names)
+		parts = append(parts, fmt.Sprintf("%s compare %s", strings.Join(names, ", "), eq))
+	}
+	return schema.EqualBytes, fmt.Sprintf("domain %s: its unique columns count different texts as equal: %s; one fake value can't "+
+		"fit both, so give them separate domains, or keep their values", domain, strings.Join(parts, "; "))
+}
+
 // checkDomain checks that the value columns of a domain mask equal values
 // alike, and returns the problem, or "". It reports the first of three
 // things that differ, since the later ones follow from it: the
 // transformers, the classes of the column types, the options.
-func checkDomain(domain string, cols []ColumnRule, members []int, distinct bool) string {
+func checkDomain(domain string, cols []ColumnRule, members []int, distinct bool, eq schema.Equality) string {
 	byUse := map[string][]schema.ColumnRef{}
 	var ok []int
 	for _, i := range members {
@@ -180,7 +225,7 @@ func checkDomain(domain string, cols []ColumnRule, members []int, distinct bool)
 		}
 		slices.Sort(parts)
 		return fmt.Sprintf("domain %s: %s masks equal values differently in %s, so they can't share a domain; %s",
-			domain, t.Name, strings.Join(parts, " and "), alikeAlternatives(types, distinct, t.Name))
+			domain, t.Name, strings.Join(parts, " and "), alikeAlternatives(types, distinct, t.Name, eq))
 	}
 
 	if diff := optionDiffs(t, cols, ok, distinct, nil); diff != "" {
@@ -224,7 +269,7 @@ func optionDiffs(t *Transformer, cols []ColumnRule, members []int, distinct bool
 	byOption := map[string]map[string][]schema.ColumnRef{}
 	for _, i := range members {
 		c := cols[i]
-		_, resolved, err := t.configure(c.Column.Type, c.Rule.Options, distinct)
+		_, resolved, err := t.configure(c.Column.Type, c.Rule.Options, distinct, schema.EqualBytes)
 		if err != nil {
 			continue
 		}
@@ -294,10 +339,10 @@ func refList(refs []schema.ColumnRef) string {
 // where the domain needs it. It leaves out except, the transformer just
 // refused, and those that mask nothing: keep and null, and default, which
 // gives each column its own default.
-func alikeAlternatives(types []value.Type, distinct bool, except string) string {
+func alikeAlternatives(types []value.Type, distinct bool, except string, eq schema.Equality) string {
 	var names []string
 	for _, t := range Catalog() {
-		if t.Name == except || t.Name == "keep" || t.Name == "null" || t.Name == "default" || !fitsAlike(t, types, distinct) {
+		if t.Name == except || t.Name == "keep" || t.Name == "null" || t.Name == "default" || !fitsAlike(t, types, distinct, eq) {
 			continue
 		}
 		names = append(names, t.Name)
@@ -310,12 +355,16 @@ func alikeAlternatives(types []value.Type, distinct bool, except string) string 
 
 // fitsAlike reports whether t masks equal values alike in every type, with
 // its default options, and keeps them distinct when distinct is set.
-func fitsAlike(t *Transformer, types []value.Type, distinct bool) bool {
+func fitsAlike(t *Transformer, types []value.Type, distinct bool, eq schema.Equality) bool {
 	for _, typ := range types {
 		if !t.MasksAlike(types[0], typ) {
 			return false
 		}
-		f, _, err := t.configure(typ, nil, distinct)
+		e := eq
+		if !t.UsesDomain() || !isText(typ) {
+			e = schema.EqualBytes
+		}
+		f, _, err := t.configure(typ, nil, distinct, e)
 		if err != nil || (distinct && f.guarantee == None) {
 			return false
 		}

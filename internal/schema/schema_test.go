@@ -111,6 +111,29 @@ func TestValidateFindsProblems(t *testing.T) {
 			`column "owner_id" of public.teams: an int type needs 8, 16, 32 or 64 bits`,
 		},
 		{
+			"primary key collations of another length",
+			func(d *Database) {
+				d.Table(TableRef{"public", "teams"}).PrimaryKey.Collations = []Collation{{}, {}}
+			},
+			"the primary key of public.teams has 2 collations for 1 columns",
+		},
+		{
+			"unique constraint collations of another length",
+			func(d *Database) {
+				tb := d.Table(TableRef{"public", "teams"})
+				tb.Uniques = append(tb.Uniques, &Key{Name: "u", Columns: []Ident{"id"}, Collations: []Collation{}})
+			},
+			`unique constraint "u" of public.teams has 0 collations for 1 columns`,
+		},
+		{
+			"index collations of another length",
+			func(d *Database) {
+				tb := d.Table(TableRef{"public", "teams"})
+				tb.Indexes = append(tb.Indexes, &Index{Name: "ix", Columns: []Ident{"id"}, Collations: []Collation{{}, {}}})
+			},
+			`index "ix" of public.teams has 2 collations for 1 columns`,
+		},
+		{
 			"generated identity column",
 			func(d *Database) {
 				c := d.Table(TableRef{"public", "teams"}).Columns[0]

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 
 	"github.com/exarth-labs/stuntdb/dialect"
 	"github.com/exarth-labs/stuntdb/internal/schema"
@@ -40,6 +41,12 @@ type Rule struct {
 	// it alike for every value column of a domain, and never for a Per
 	// column; a unique column is distinct either way.
 	Distinct bool
+
+	// Equality is when the domain's unique keys count two texts as equal,
+	// so that a foreign key holding 'BOB' masks like the 'bob' it
+	// references under NOCASE. ResolveDomains sets it like Distinct; a
+	// unique column's own keys count either way (Column.Equality).
+	Equality schema.Equality
 }
 
 // DefaultDomain is a column's domain when its rule names none.
@@ -64,16 +71,28 @@ func Describe(ref schema.TableRef, t *schema.Table, caps dialect.Capabilities) [
 	unique := uniqueColumns(t)
 	out := make([]Column, len(t.Columns))
 	for i, col := range t.Columns {
+		u, ok := unique[col.Name]
 		out[i] = Column{
 			Ref:               schema.ColumnRef{Table: ref, Column: col.Name},
 			Type:              col.Type,
 			Nullable:          col.Nullable,
-			Unique:            unique[col.Name],
+			Unique:            ok,
 			HasDefault:        col.Default != nil,
 			EmptyStringIsNull: caps.EmptyStringIsNull,
 		}
+		if isText(col.Type) {
+			out[i].Equality, out[i].Collation = u.equality, strings.Join(u.collations, ", ")
+		}
 	}
 	return out
+}
+
+// uniqueness is how a column's unique keys compare it: the coarsest kind
+// among them (Column.Equality), and the names of their collations that
+// don't compare bytes.
+type uniqueness struct {
+	equality   schema.Equality
+	collations []string
 }
 
 // uniqueColumns returns the columns of a table that are part of a primary
@@ -87,22 +106,28 @@ func Describe(ref schema.TableRef, t *schema.Table, caps dialect.Capabilities) [
 // and a unique generated column is recomputed by the target from the
 // columns it reads. The target's unique index still refuses a collision at
 // load time, so nothing broken is written, but the run fails late.
-func uniqueColumns(t *schema.Table) map[schema.Ident]bool {
-	out := map[schema.Ident]bool{}
-	add := func(cols []schema.Ident) {
-		for _, c := range cols {
-			out[c] = true
+func uniqueColumns(t *schema.Table) map[schema.Ident]uniqueness {
+	out := map[schema.Ident]uniqueness{}
+	add := func(cols []schema.Ident, coll func(int) schema.Collation) {
+		for i, c := range cols {
+			u := out[c]
+			k := coll(i)
+			u.equality = schema.Coarsest(u.equality, k.Equality)
+			if k.Equality != schema.EqualBytes && !slices.Contains(u.collations, k.Name) {
+				u.collations = append(u.collations, k.Name)
+			}
+			out[c] = u
 		}
 	}
 	if t.PrimaryKey != nil {
-		add(t.PrimaryKey.Columns)
+		add(t.PrimaryKey.Columns, t.PrimaryKey.Collation)
 	}
 	for _, k := range t.Uniques {
-		add(k.Columns)
+		add(k.Columns, k.Collation)
 	}
 	for _, ix := range t.Indexes {
 		if ix.Unique {
-			add(ix.Columns)
+			add(ix.Columns, ix.Collation)
 		}
 	}
 	return out
@@ -122,6 +147,10 @@ type plan struct {
 	fn     Func
 	domain string
 	per    int // the row position of the value that seeds this column
+
+	// equality is when the column's key counts two texts as equal: each
+	// text is folded to that form first (see equalityOf).
+	equality schema.Equality
 }
 
 // NewTable prepares the masking of a table's rows. Every column needs a
@@ -153,7 +182,7 @@ func NewTable(ref schema.TableRef, t *schema.Table, rules map[schema.Ident]Rule,
 		}
 		position[col.Ref.Column] = len(tbl.columns)
 		tbl.columns = append(tbl.columns, col.Ref.Column)
-		tbl.plans = append(tbl.plans, plan{ref: col.Ref, use: rule.Use, fn: f, domain: rule.DomainFor(col.Ref)})
+		tbl.plans = append(tbl.plans, plan{ref: col.Ref, use: rule.Use, fn: f, domain: rule.DomainFor(col.Ref), equality: f.(*checked).equality})
 		pers = append(pers, rule.Per)
 	}
 	for i, per := range pers {
@@ -169,6 +198,16 @@ func NewTable(ref schema.TableRef, t *schema.Table, rules map[schema.Ident]Rule,
 		p.per = j
 	}
 	return tbl, nil
+}
+
+// fold returns a text in the form the column's key compares it, so that
+// equal keys mask alike: 'BOB' is masked as 'bob' under NOCASE.
+func (p *plan) fold(v value.Value) value.Value {
+	if p.equality == schema.EqualBytes || v.Kind() != value.KindString {
+		return v
+	}
+	folded, _ := p.equality.Fold(v.Text())
+	return value.String(folded)
 }
 
 // Columns returns the columns to read from the source and write to the
@@ -208,13 +247,18 @@ func (m *RowMasker) Mask(dst, src []value.Value) error {
 			dst[i] = in
 			continue
 		}
+		folded := p.fold(in)
 		m.ctx.Domain = p.domain
 		m.ctx.Rand = nil // an unseeded function has no stream, not the last column's
 		if p.fn.Seeded() {
-			m.rand.reset(m.seeder.seed(p.domain, p.use, src[p.per]))
+			seed := src[p.per]
+			if p.per == i {
+				seed = folded
+			}
+			m.rand.reset(m.seeder.seed(p.domain, p.use, seed))
 			m.ctx.Rand = m.rand
 		}
-		out, err := p.fn.Mask(&m.ctx, in)
+		out, err := p.fn.Mask(&m.ctx, folded)
 		if err != nil {
 			return fmt.Errorf("mask %s with %s: %w", p.ref, p.use, err)
 		}

@@ -56,6 +56,11 @@ func (d *Database) validateTable(ref TableRef, t *Table, add func(string, ...any
 		}
 	}
 
+	checkCollations := func(what string, names []Ident, colls []Collation) {
+		if colls != nil && len(colls) != len(names) {
+			add("%s of %s has %d collations for %d columns", what, ref, len(colls), len(names))
+		}
+	}
 	checkColumns := func(what string, names []Ident) {
 		if len(names) == 0 {
 			add("%s of %s has no columns", what, ref)
@@ -68,14 +73,17 @@ func (d *Database) validateTable(ref TableRef, t *Table, add func(string, ...any
 	}
 	if t.PrimaryKey != nil {
 		checkColumns("the primary key", t.PrimaryKey.Columns)
+		checkCollations("the primary key", t.PrimaryKey.Columns, t.PrimaryKey.Collations)
 	}
 	for _, k := range t.Uniques {
 		checkColumns(fmt.Sprintf("unique constraint %q", k.Name), k.Columns)
+		checkCollations(fmt.Sprintf("unique constraint %q", k.Name), k.Columns, k.Collations)
 	}
 	for _, ix := range t.Indexes {
 		if !ix.Expression || len(ix.Columns) > 0 {
 			checkColumns(fmt.Sprintf("index %q", ix.Name), ix.Columns)
 		}
+		checkCollations(fmt.Sprintf("index %q", ix.Name), ix.Columns, ix.Collations)
 	}
 	for _, fk := range t.ForeignKeys {
 		what := fmt.Sprintf("foreign key %q", fk.Name)

@@ -55,6 +55,19 @@ func TestFingerprint(t *testing.T) {
 		{"a unique index's native DDL", func(d *Database) {
 			d.Namespaces[0].Tables[1].Indexes[0].Native = "CREATE UNIQUE INDEX orders_user ON orders(user_id)"
 		}},
+		{"keys that compare bytes by name", func(d *Database) {
+			d.Namespaces[0].Tables[0].PrimaryKey.Collations = []Collation{{Name: "BINARY"}}
+			d.Namespaces[0].Tables[1].Indexes[0].Collations = []Collation{{Name: "BINARY"}}
+		}},
+		{"a collation's name, of the same kind", func(d *Database) {
+			d.Namespaces[0].Tables[0].Uniques = []*Key{{Columns: []Ident{"email"}, Collations: []Collation{{Name: "NOCASE", Equality: EqualIgnoringASCIICase}}}}
+			base := d.Fingerprint()
+			d.Namespaces[0].Tables[0].Uniques[0].Collations[0].Name = "nocase"
+			if d.Fingerprint() != base {
+				t.Error("a collation's name changed the fingerprint")
+			}
+			d.Namespaces[0].Tables[0].Uniques = nil
+		}},
 		{"statistics", func(d *Database) { d.Namespaces[0].Tables[0].EstimatedRows = 1000 }},
 		{"a view", func(d *Database) { d.Namespaces[0].Objects = []*Object{{Kind: ObjectView, Name: "v"}} }},
 	}
@@ -88,6 +101,20 @@ func TestFingerprint(t *testing.T) {
 		{"a unique index's columns", func(d *Database) { d.Namespaces[0].Tables[1].Indexes[0].Columns = []Ident{"id", "user_id"} }},
 		{"a partial unique index", func(d *Database) { d.Namespaces[0].Tables[1].Indexes[0].Partial = true }},
 		{"a unique index on an expression", func(d *Database) { d.Namespaces[0].Tables[1].Indexes[0].Expression = true }},
+		{"how a primary key compares", func(d *Database) {
+			d.Namespaces[0].Tables[0].PrimaryKey.Collations = []Collation{{Name: "NOCASE", Equality: EqualIgnoringASCIICase}}
+		}},
+		{"how a unique key compares", func(d *Database) {
+			d.Namespaces[0].Tables[0].Uniques = []*Key{{Columns: []Ident{"email"}, Collations: []Collation{{Equality: EqualIgnoringTrailingSpaces}}}}
+			base := d.Fingerprint()
+			d.Namespaces[0].Tables[0].Uniques[0].Collations[0].Equality = EqualIgnoringASCIICase
+			if d.Fingerprint() == base {
+				t.Error("changing a unique key's kind of equality did not change the fingerprint")
+			}
+		}},
+		{"how a unique index compares", func(d *Database) {
+			d.Namespaces[0].Tables[1].Indexes[0].Collations = []Collation{{Name: "reverse", Equality: EqualOther}}
+		}},
 		{"a foreign key", func(d *Database) { d.Namespaces[0].Tables[1].ForeignKeys = nil }},
 		{"a generated column", func(d *Database) { d.Namespaces[0].Tables[0].Columns[1].Generated = &Generated{} }},
 	}

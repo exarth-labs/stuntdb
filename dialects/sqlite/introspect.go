@@ -283,19 +283,32 @@ func (r *reader) indexes(t *schema.Table, catalog []catalogEntry) error {
 		return err
 	}
 
+	// The primary key's columns come from the table; its index, which a
+	// rowid alias doesn't have, lists them in the key's order with their
+	// collations.
+	for name, i := range infos {
+		if i.origin != "pk" || t.PrimaryKey == nil {
+			continue
+		}
+		_, colls, _, err := r.indexColumns(name)
+		if err != nil {
+			return err
+		}
+		t.PrimaryKey.Collations = colls
+	}
 	for _, e := range catalog {
 		i, ok := infos[e.name]
 		if !ok || i.origin == "pk" {
-			continue // another table's index, or the primary key, already read from the columns
+			continue // another table's index, or the primary key's
 		}
-		columns, expression, err := r.indexColumns(e.name)
+		columns, colls, expression, err := r.indexColumns(e.name)
 		if err != nil {
 			return err
 		}
 		if i.origin == "u" {
 			// A UNIQUE constraint. SQLite doesn't report the constraint's
 			// name, only its automatic index's.
-			t.Uniques = append(t.Uniques, &schema.Key{Columns: columns})
+			t.Uniques = append(t.Uniques, &schema.Key{Columns: columns, Collations: colls})
 			continue
 		}
 		t.Indexes = append(t.Indexes, &schema.Index{
@@ -305,30 +318,49 @@ func (r *reader) indexes(t *schema.Table, catalog []catalogEntry) error {
 			Partial:    i.partial,
 			Expression: expression,
 			Native:     e.sql,
+			Collations: colls,
 		})
 	}
 	return nil
 }
 
-func (r *reader) indexColumns(index string) (columns []schema.Ident, expression bool, err error) {
-	rows, err := r.tx.QueryContext(r.ctx, `SELECT cid, coalesce(name, '') FROM pragma_index_xinfo(?, 'main') WHERE key = 1 ORDER BY seqno`, index)
+// equality is how SQLite's collation compares text. A collation an
+// application registers is unknown here: stuntdb can't reproduce it.
+func equality(collation string) schema.Equality {
+	switch strings.ToUpper(collation) {
+	case "BINARY":
+		return schema.EqualBytes
+	case "NOCASE":
+		return schema.EqualIgnoringASCIICase
+	case "RTRIM":
+		return schema.EqualIgnoringTrailingSpaces
+	default:
+		return schema.EqualOther
+	}
+}
+
+// indexColumns returns an index's plain columns, with the collation each
+// is compared with, and whether it also uses expressions.
+func (r *reader) indexColumns(index string) (columns []schema.Ident, colls []schema.Collation, expression bool, err error) {
+	rows, err := r.tx.QueryContext(r.ctx, `SELECT cid, coalesce(name, ''), coalesce(coll, '') FROM pragma_index_xinfo(?, 'main') WHERE key = 1 ORDER BY seqno`, index)
 	if err != nil {
-		return nil, false, err
+		return nil, nil, false, err
 	}
 	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var cid int64
-		var name string
-		if err := rows.Scan(&cid, &name); err != nil {
-			return nil, false, err
+		var name, coll string
+		if err := rows.Scan(&cid, &name, &coll); err != nil {
+			return nil, nil, false, err
 		}
 		if cid == -2 {
 			expression = true
 			continue
 		}
 		columns = append(columns, schema.Ident(name))
+		colls = append(colls, schema.Collation{Name: coll, Equality: equality(coll)})
 	}
-	return columns, expression, rows.Err()
+	return columns, colls, expression, rows.Err()
 }
 
 var actions = map[string]schema.Action{
