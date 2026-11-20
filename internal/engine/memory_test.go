@@ -1,9 +1,11 @@
 package engine
 
 import (
+	"context"
 	"runtime"
 	"runtime/metrics"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/exarth-labs/stuntdb/dialect"
@@ -30,6 +32,47 @@ func TestMemoryIsFlat(t *testing.T) {
 	}
 }
 
+// TestSmallBudgetOnManyCPUs fills every queue of a copy into a target that
+// takes no rows, with 64 CPUs and a 4 MiB budget, and checks that the live
+// heap stays within the pipeline's half of the budget. A worker per CPU
+// with batches of at least 64 KiB would hold about 10 MiB.
+func TestSmallBudgetOnManyCPUs(t *testing.T) {
+	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(64))
+	const budget = 4 << 20
+	synctest.Test(t, func(t *testing.T) {
+		job, src := genJob(t, dialect.SnapshotSingle, 1, 10_000_000, 0, waitForCancel(nil))
+		job.Budget = budget
+		runtime.GC()
+		base := liveHeap()
+		ctx, cancel := context.WithCancel(t.Context())
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			_, _ = Copy(ctx, job)
+		}()
+		synctest.Wait() // the queues are full and the reader waits
+		runtime.GC()
+		held := int64(liveHeap()) - int64(base)
+		read := src.stats.rows.Load()
+		cancel()
+		<-done
+		t.Logf("%d rows read, live heap %d KiB above the baseline", read, held>>10)
+		if read == 0 {
+			t.Fatal("nothing was read")
+		}
+		if held > budget/2 {
+			t.Errorf("the live heap held %d KiB, over the pipeline's %d KiB", held>>10, budget/2>>10)
+		}
+	})
+}
+
+// liveHeap is the heap the last collection marked live.
+func liveHeap() uint64 {
+	sample := []metrics.Sample{{Name: "/gc/heap/live:bytes"}}
+	metrics.Read(sample)
+	return sample[0].Value.Uint64()
+}
+
 // peakLiveHeap copies rows and returns the most live heap seen above what
 // was live before. Live heap is what the last collection marked, so
 // garbage not yet collected doesn't blur the comparison.
@@ -48,11 +91,9 @@ func peakLiveHeap(t *testing.T, rows int64, budget int64) uint64 {
 		Tables:   []Table{{Ref: r, Schema: tbl, Mask: maskTable(t, r, tbl, keep)}},
 	}
 
-	sample := []metrics.Sample{{Name: "/gc/heap/live:bytes"}}
-	live := func() uint64 { metrics.Read(sample); return sample[0].Value.Uint64() }
 	runtime.GC()
 	runtime.GC()
-	base := live()
+	base := liveHeap()
 
 	stop, done := make(chan struct{}), make(chan uint64)
 	go func() {
@@ -65,7 +106,7 @@ func peakLiveHeap(t *testing.T, rows int64, budget int64) uint64 {
 				done <- peak
 				return
 			case <-tick.C:
-				peak = max(peak, live())
+				peak = max(peak, liveHeap())
 			}
 		}
 	}()

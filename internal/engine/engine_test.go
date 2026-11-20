@@ -388,7 +388,10 @@ func copyTuned(ctx context.Context, job Job, adjust func(*tuning)) (Report, erro
 		}
 		plans[i] = p
 	}
-	tn := tune(job, len(plans))
+	tn, err := tune(job, len(plans))
+	if err != nil {
+		return Report{}, err
+	}
 	if adjust != nil {
 		adjust(&tn)
 	}

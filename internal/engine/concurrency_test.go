@@ -92,6 +92,40 @@ func TestCancel(t *testing.T) {
 	}
 }
 
+// TestCancelWinsOverAnEarlierError fails one table with its own error,
+// then cancels the copy while another table's sink is still returning (a
+// driver that notices the stop late): Copy returns the cancel's cause, as
+// it promises, not the earlier error.
+func TestCancelWinsOverAnEarlierError(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		disk := errors.New("disk full")
+		stop := errors.New("stopped by the user")
+		release := make(chan struct{})
+		sink := sinkFunc(func(_ context.Context, table schema.TableRef, _ []schema.Ident, rows dialect.RowIter) (int64, error) {
+			if table.Name == "T0" {
+				return 0, disk
+			}
+			<-release
+			return drain(rows)
+		})
+		job, _ := genJob(t, dialect.SnapshotShared, 2, 100, 0, sink)
+		ctx, cancel := context.WithCancelCause(t.Context())
+		var err error
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			_, err = copyTuned(ctx, job, small)
+		}()
+		synctest.Wait() // T0 has failed, and T1's sink hasn't returned
+		cancel(stop)
+		close(release)
+		<-done
+		if !errors.Is(err, stop) {
+			t.Errorf("Copy = %v, want the cancel's cause", err)
+		}
+	})
+}
+
 // TestNoDeadlock copies several tables into a sink that writes one table
 // at a time, which deadlocks if tables are read in parallel on one
 // connection, or if a pipeline waits on a table it blocks.
