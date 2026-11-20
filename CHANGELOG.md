@@ -15,7 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   - A foreign key takes its parent's whole rule (the transformer, its options and its domain), so both get the same fake values. It can't have a rule of its own, and a column whose parents are masked differently, or in different domains, is refused. In a cycle of foreign keys, one column takes the rule.
   - Domains are checked as a whole.
   - `per: <column>` can be written in `stuntdb.yaml`.
-  - The lockfile records each column's options, domain and `per`, so a change to any of them shows up in review.
+  - The lockfile records each column's options, domain and `per`, so a change to any of them shows up in review. A unique index added or dropped fails the check too, as a unique constraint does: a unique column's masked values must stay distinct, which changes them.
   - `stuntdb init` writes the `max_length` that fits into a suggestion that would be too long for its column.
 - Column classification: built-in rule packs (`rules/core.yaml` for personal data, `rules/secrets.yaml` for passwords, keys and tokens) suggest what each column holds, and how to mask it, from its name and type alone. No data is read. Secrets are always replaced. Every suggestion is one the masking engine accepts for the column's type. `init` and `check` use it.
 - The configuration format, `stuntdb.yaml` version 1, with a JSON Schema (`schemas/stuntdb.schema.json`) for autocomplete and validation in editors. Every mistake is reported at once, with its line and column. Secrets come only from environment variables or a key file. The lockfile, `stuntdb.lock`, records the decision for every column.

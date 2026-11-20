@@ -76,6 +76,24 @@ func TestInitAndCheckOnSQLite(t *testing.T) {
 		t.Errorf("orders.customer_id is not masked like customers.id:\n%s", out)
 	}
 
+	// An index changes no masked value, so it passes. A unique index can:
+	// its columns' masked values must stay distinct. So adding or dropping
+	// one fails the check until it is reviewed.
+	execSQL(t, dbPath, `CREATE INDEX orders_total ON orders(total)`)
+	run(exitOK, "check", "-c", cfg)
+	execSQL(t, dbPath, `CREATE UNIQUE INDEX orders_customer ON orders(customer_id)`)
+	out = run(exitCheckFailed, "check", "-c", cfg)
+	if !strings.Contains(out, "the database's structure changed") {
+		t.Errorf("check does not report the new unique index:\n%s", out)
+	}
+	run(exitOK, "check", "--update", "-c", cfg)
+	execSQL(t, dbPath, `DROP INDEX orders_customer`)
+	out = run(exitCheckFailed, "check", "-c", cfg)
+	if !strings.Contains(out, "the database's structure changed") {
+		t.Errorf("check does not report the dropped unique index:\n%s", out)
+	}
+	run(exitOK, "check", "--update", "-c", cfg)
+
 	// A new column in production fails the check until it is reviewed.
 	execSQL(t, dbPath, `ALTER TABLE customers ADD COLUMN phone TEXT`)
 	out = run(exitCheckFailed, "check", "-c", cfg)
