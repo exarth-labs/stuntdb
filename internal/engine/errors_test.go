@@ -207,6 +207,7 @@ func TestJobValidation(t *testing.T) {
 		{"no sink", func(j *Job) { j.Sink = nil }, "no sink"},
 		{"no keys", func(j *Job) { j.Keys = nil }, "no masking keys"},
 		{"no budget", func(j *Job) { j.Budget = 0 }, "memory budget"},
+		{"a budget too small", func(j *Job) { j.Budget = 1 << 19 }, "is too small for the rows in flight"},
 		{"negative workers", func(j *Job) { j.Workers = -1 }, "can't be negative"},
 		{"negative table jobs", func(j *Job) { j.TableJobs = -1 }, "can't be negative"},
 		{"negative chunk", func(j *Job) { j.ChunkBytes = -1 }, "can't be negative"},

@@ -42,15 +42,17 @@ type Job struct {
 	Sink     Sink
 	Tables   []Table
 
-	// Budget is the memory the copy may use, in bytes.
+	// Budget is the memory the copy may use, in bytes: at least 1 MiB, and
+	// more for many Workers or TableJobs.
 	Budget int64
 
 	// Workers is the number of mask workers per table. 0 shares
-	// GOMAXPROCS among the tables copied at once.
+	// GOMAXPROCS among the tables copied at once, as far as Budget allows.
 	Workers int
 
 	// TableJobs is the most tables copied at once from a shared snapshot.
-	// 0 means DefaultTableJobs. Other snapshots copy one table at a time.
+	// 0 means DefaultTableJobs, or fewer if Budget can't hold them. Other
+	// snapshots copy one table at a time.
 	TableJobs int
 
 	// ChunkBytes is the size of one read of a table with a key. 0 means
@@ -88,7 +90,11 @@ func Copy(ctx context.Context, job Job) (Report, error) {
 		}
 		plans[i] = p
 	}
-	return run(ctx, job, plans, tune(job, len(plans)))
+	tn, err := tune(job, len(plans))
+	if err != nil {
+		return Report{}, err
+	}
+	return run(ctx, job, plans, tn)
 }
 
 func (j Job) validate() error {

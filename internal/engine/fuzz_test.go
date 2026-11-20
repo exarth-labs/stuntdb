@@ -57,6 +57,7 @@ func TestSameOutputWhateverTheShape(t *testing.T) {
 			rec := newRecorder()
 			job, _ := genJob(t, dialect.SnapshotShared, 4, 2000, 0, rec)
 			job.Workers, job.TableJobs = shape.workers, shape.tables
+			job.Budget = 1 << 30 // holds every shape, even with a worker per CPU on many CPUs
 			if _, err := copyTuned(t.Context(), job, func(tn *tuning) { tn.batchRows, tn.chunkBytes = 16, 4096 }); err != nil {
 				t.Fatal(err)
 			}
