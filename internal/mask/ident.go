@@ -7,6 +7,7 @@ import (
 	"math"
 	"strings"
 
+	"github.com/exarth-labs/stuntdb/internal/schema"
 	"github.com/exarth-labs/stuntdb/internal/value"
 )
 
@@ -166,6 +167,14 @@ func fpeTransformer() *Transformer {
 				}}, nil
 			}
 			name := o.OneOf("alphabet", "alnum", "digits", "lower", "upper", "alnum")
+			if t.equality == schema.EqualIgnoringASCIICase && (name == "alnum" || name == "upper") {
+				// Each value arrives lower-cased, as the key compares it.
+				why := "would write capital letters, so two values could differ only in case, which the key counts as equal"
+				if name == "upper" {
+					why = "would find no letters to encrypt"
+				}
+				o.fail("alphabet", "the column's key ignores ASCII case, so fpe masks each value's lower-case form, and %s %s; use lower or digits", name, why)
+			}
 			alphabet := fpeAlphabets[name]
 			least := ff1MinLength(len(alphabet))
 			return &fn{

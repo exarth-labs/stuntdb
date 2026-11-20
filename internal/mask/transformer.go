@@ -62,6 +62,13 @@ type Column struct {
 	// EmptyStringIsNull is the engine's Capabilities.EmptyStringIsNull: an
 	// empty string written there becomes NULL.
 	EmptyStringIsNull bool
+
+	// Equality is when the column's unique keys count two texts as equal:
+	// the coarsest kind among them (schema.Coarsest), or EqualBytes for a
+	// column that isn't text or not in a unique key. Collation names the
+	// keys' collations, for messages.
+	Equality  schema.Equality
+	Collation string
 }
 
 // Context is what a masking function gets besides the value.
@@ -106,6 +113,12 @@ type target struct {
 	// every column of the domain then uses the forms that keep values
 	// distinct.
 	distinct bool
+
+	// equality is when the domain's keys count two texts as equal. The
+	// masker folds each text to that form before the transformer sees it
+	// (see equalityOf), so a transformer that copies letters from its input
+	// sees only those of the fold.
+	equality schema.Equality
 
 	// scale and whole are a decimal column's declared decimal places and
 	// whole digits (precision − scale), or -1 when it declares no precision.
@@ -164,8 +177,8 @@ func (t *Transformer) UsesDomain() bool { return !t.domainFree }
 // Distinct is left out: it never changes which options are read
 // (TestDistinctReadsTheSameOptions).
 func (t *Transformer) SameOptions(kind value.TypeKind, a, b map[string]any) bool {
-	_, ra, errA := t.configure(value.Type{Kind: kind}, a, false)
-	_, rb, errB := t.configure(value.Type{Kind: kind}, b, false)
+	_, ra, errA := t.configure(value.Type{Kind: kind}, a, false, schema.EqualBytes)
+	_, rb, errB := t.configure(value.Type{Kind: kind}, b, false, schema.EqualBytes)
 	return errA == nil && errB == nil && maps.Equal(ra, rb)
 }
 
@@ -231,12 +244,17 @@ func Configure(col Column, rule Rule) (Func, error) {
 	if !t.Accepts(col.Type.Kind) {
 		return nil, fmt.Errorf("%s cannot mask a column of type %s; it masks %s", t.Name, col.Type, typeList(t.Types))
 	}
-	f, _, err := t.configure(col.Type, rule.Options, rule.Distinct || col.Unique)
+	eq := equalityOf(t, col, rule)
+	if eq == schema.EqualOther {
+		return nil, fmt.Errorf("its key compares text under %s, which stuntdb can't reproduce, so %s could give values the key counts as equal different fake values, "+
+			"or the reverse; keep the values, or compare the key with a binary, NOCASE or RTRIM collation", collationName(col, rule), t.Name)
+	}
+	f, _, err := t.configure(col.Type, rule.Options, rule.Distinct || col.Unique, eq)
 	if err != nil {
 		return nil, err
 	}
 	if col.Unique && f.guarantee == None {
-		return nil, fmt.Errorf("the column is part of a unique key, so its masked values must stay distinct, and %s cannot promise that%s", t.Name, distinctAlternatives(col, t.Name))
+		return nil, fmt.Errorf("the column is part of a unique key, so its masked values must stay distinct, and %s cannot promise that%s", t.Name, distinctAlternatives(col, t.Name, eq))
 	}
 	if rule.Per != "" {
 		switch {
@@ -255,13 +273,36 @@ func Configure(col Column, rule Rule) (Func, error) {
 			return nil, err
 		}
 	}
-	return &checked{fn: f, col: col, name: t.Name}, nil
+	return &checked{fn: f, col: col, name: t.Name, equality: eq}, nil
+}
+
+// equalityOf returns when the keys of a column's domain count two of its
+// values as equal: the domain's (Rule.Equality, which ResolveDomains sets)
+// or the column's own. It is EqualBytes unless the transformer's outputs
+// come from the value: keep copies it, and the database compares the copy
+// as it did the original. Only text is folded.
+func equalityOf(t *Transformer, col Column, rule Rule) schema.Equality {
+	if !t.UsesDomain() || !isText(col.Type) {
+		return schema.EqualBytes
+	}
+	return schema.Coarsest(rule.Equality, col.Equality)
+}
+
+func isText(t value.Type) bool { return t.Kind == value.TypeString || t.Kind == value.TypeText }
+
+// collationName names, for a message, the collation a column's values are
+// compared with: its own key's, or for a foreign key, its parent's kind.
+func collationName(col Column, rule Rule) string {
+	if col.Collation != "" && col.Equality == schema.EqualOther {
+		return "the collation " + col.Collation
+	}
+	return "a collation of the kind " + schema.Coarsest(rule.Equality, col.Equality).String()
 }
 
 // configure builds the masking function for a column kind, and reports the
 // mistakes in the options together. It also returns the options the build
 // used, with their defaults filled in (see Options.resolve).
-func (t *Transformer) configure(typ value.Type, options map[string]any, distinct bool) (*fn, map[string]string, error) {
+func (t *Transformer) configure(typ value.Type, options map[string]any, distinct bool, eq schema.Equality) (*fn, map[string]string, error) {
 	kind := typ.Kind
 	if kind == value.TypeString {
 		kind = value.TypeText
@@ -271,7 +312,7 @@ func (t *Transformer) configure(typ value.Type, options map[string]any, distinct
 		scale, whole = typ.Scale, max(typ.Precision-typ.Scale, 0)
 	}
 	o := newOptions(t, kind, options)
-	f, err := t.build(target{kind: kind, distinct: distinct, scale: scale, whole: whole}, o)
+	f, err := t.build(target{kind: kind, distinct: distinct, equality: eq, scale: scale, whole: whole}, o)
 	if err := errors.Join(err, o.err()); err != nil {
 		return nil, nil, err
 	}
@@ -280,8 +321,8 @@ func (t *Transformer) configure(typ value.Type, options map[string]any, distinct
 
 // distinctAlternatives tells the user, for an error message, which other
 // transformers keep the values of a unique column distinct.
-func distinctAlternatives(col Column, except string) string {
-	names := alternatives(col, true, except)
+func distinctAlternatives(col Column, except string, eq schema.Equality) string {
+	names := alternatives(col, true, except, eq)
 	if len(names) == 0 {
 		return fmt.Sprintf("; in a column of type %s, no transformer can, so keep the values or change the key", col.Type)
 	}
@@ -291,7 +332,7 @@ func distinctAlternatives(col Column, except string) string {
 // fitAlternatives tells the user, for an error message, which other
 // transformers fit a column that is too short for the one refused.
 func fitAlternatives(col Column, distinct bool, except string) string {
-	names := alternatives(col, distinct, except)
+	names := alternatives(col, distinct, except, schema.EqualBytes)
 	if len(names) == 0 {
 		return "; no other transformer fits the column"
 	}
@@ -303,14 +344,14 @@ func fitAlternatives(col Column, distinct bool, except string) string {
 // distinct where the domain needs it. It leaves out except, the transformer
 // just refused, those that mask nothing (keep, null and default), and in a
 // text column, those that read text in one format only.
-func alternatives(col Column, distinct bool, except string) []string {
+func alternatives(col Column, distinct bool, except string, eq schema.Equality) []string {
 	text := col.Type.Kind == value.TypeString || col.Type.Kind == value.TypeText
 	var names []string
 	for _, t := range Catalog() {
 		if t.Name == except || t.Name == "keep" || t.Name == "null" || t.Name == "default" || !t.Accepts(col.Type.Kind) || text && t.readsText {
 			continue
 		}
-		f, _, err := t.configure(col.Type, nil, distinct || col.Unique)
+		f, _, err := t.configure(col.Type, nil, distinct || col.Unique, eq)
 		if err != nil || (col.Unique || distinct) && f.guarantee == None || (f.fit != nil && f.fit(col) != nil) {
 			continue
 		}
@@ -323,8 +364,9 @@ func alternatives(col Column, distinct bool, except string) []string {
 // would not fit never leaves the masker.
 type checked struct {
 	*fn
-	col  Column
-	name string
+	col      Column
+	name     string
+	equality schema.Equality
 }
 
 func (c *checked) Mask(ctx *Context, in value.Value) (value.Value, error) {
@@ -352,6 +394,13 @@ func (c *checked) Mask(ctx *Context, in value.Value) (value.Value, error) {
 	}
 	if c.col.EmptyStringIsNull && !c.col.Nullable && out.Kind() == value.KindString && out.Text() == "" {
 		return value.Value{}, fmt.Errorf("%s wrote an empty string, which this database stores as NULL, into a NOT NULL column", c.name)
+	}
+	// Two outputs that differ in bytes must differ under the key too, so
+	// each must already be in the form the key compares.
+	if c.equality != schema.EqualBytes && out.Kind() == value.KindString {
+		if folded, _ := c.equality.Fold(out.Text()); folded != out.Text() {
+			return value.Value{}, fmt.Errorf("%s wrote a value its key, %s, would count as equal to another, which could break the key", c.name, c.equality)
+		}
 	}
 	return out, nil
 }

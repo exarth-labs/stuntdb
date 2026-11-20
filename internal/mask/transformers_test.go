@@ -1278,14 +1278,17 @@ func TestSameOptions(t *testing.T) {
 	}
 }
 
-// SameOptions builds without Distinct; this proves it reads the same options.
+// SameOptions builds without Distinct, and comparing bytes; this proves it
+// reads the same options either way.
 func TestDistinctReadsTheSameOptions(t *testing.T) {
 	for _, tr := range Catalog() {
 		for _, k := range tr.Types {
-			_, plain, errP := tr.configure(value.Type{Kind: k}, nil, false)
-			_, distinct, errD := tr.configure(value.Type{Kind: k}, nil, true)
-			if errP == nil && errD == nil && !maps.Equal(plain, distinct) {
-				t.Errorf("%s in %s reads %v, but %v where values stay distinct", tr.Name, k, plain, distinct)
+			_, plain, errP := tr.configure(value.Type{Kind: k}, nil, false, schema.EqualBytes)
+			for _, eq := range []schema.Equality{schema.EqualBytes, schema.EqualIgnoringTrailingSpaces, schema.EqualIgnoringASCIICase} {
+				_, distinct, errD := tr.configure(value.Type{Kind: k}, nil, true, eq)
+				if errP == nil && errD == nil && !maps.Equal(plain, distinct) {
+					t.Errorf("%s in %s reads %v, but %v where values stay distinct, comparing %s", tr.Name, k, plain, distinct, eq)
+				}
 			}
 		}
 	}

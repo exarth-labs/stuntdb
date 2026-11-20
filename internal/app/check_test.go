@@ -344,3 +344,70 @@ func TestTableNames(t *testing.T) {
 		})
 	}
 }
+
+// TestCheckKeyCollations checks what check says about keys whose collation
+// counts different texts as equal: CUSTOMERS.EMAIL, which ORDERS.BILLING_EMAIL
+// references.
+func TestCheckKeyCollations(t *testing.T) {
+	nocase := schema.Collation{Name: "NOCASE", Equality: schema.EqualIgnoringASCIICase}
+	app := schema.Collation{Name: "reverse", Equality: schema.EqualOther}
+	rules := func(email string) string {
+		return strings.Replace(shopRules, "    email: email\n", "    email: "+email+"\n", 1)
+	}
+	tests := []struct {
+		name   string
+		coll   schema.Collation
+		unique bool // FIRST_NAME has a unique index that compares bytes
+		config string
+		want   []string // nil: check passes
+	}{
+		{
+			"fpe with capital letters under NOCASE", nocase, false, rules("fpe"),
+			[]string{
+				"APP.CUSTOMERS.EMAIL: option alphabet: the column's key ignores ASCII case, so fpe masks each value's lower-case form, and alnum would write capital letters",
+				"APP.ORDERS.BILLING_EMAIL: option alphabet: the column's key ignores ASCII case",
+				"it follows APP.CUSTOMERS.EMAIL",
+			},
+		},
+		{"fpe with lower-case letters under NOCASE", nocase, false, rules("{use: fpe, alphabet: lower}"), nil},
+		{"email under NOCASE", nocase, false, shopRules, nil},
+		{
+			"a collation stuntdb can't reproduce", app, false, shopRules,
+			[]string{"APP.CUSTOMERS.EMAIL: its key compares text under the collation reverse, which stuntdb can't reproduce, so email could give values the key counts as equal different fake values"},
+		},
+		{"keep under it", app, false, rules("keep"), nil},
+		{
+			"unique columns that compare differently in one domain", nocase, true,
+			strings.Replace(shopRules, "    first_name: first_name\n", "    first_name: {use: email, domain: APP.CUSTOMERS.EMAIL}\n", 1),
+			[]string{"domain APP.CUSTOMERS.EMAIL: its unique columns count different texts as equal: APP.CUSTOMERS.FIRST_NAME compare bytes; APP.CUSTOMERS.EMAIL (NOCASE) compare ignoring ASCII case; one fake value can't fit both, so give them separate domains, or keep their values"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := shop()
+			customers := db.Table(schema.TableRef{Namespace: "APP", Name: "CUSTOMERS"})
+			customers.Uniques[0].Collations = []schema.Collation{tt.coll}
+			if tt.unique {
+				customers.Indexes = []*schema.Index{{Name: "FIRST_NAME_KEY", Unique: true, Columns: []schema.Ident{"FIRST_NAME"}}}
+			}
+			f := newFixture(t, db)
+			f.write(t, config.DefaultPath, "version: 1\nsource:\n  url: fake:shop\n"+tt.config)
+			res, err := f.check(t, true)
+			text := problemText(res.Problems)
+			if tt.want == nil {
+				if err != nil {
+					t.Fatalf("check = %v:\n%s", err, text)
+				}
+				return
+			}
+			if errs.KindOf(err) != errs.CheckFailed {
+				t.Fatalf("check = %v, want CHECK_FAILED", err)
+			}
+			for _, w := range tt.want {
+				if !strings.Contains(text, w) {
+					t.Errorf("the problems do not contain %q:\n%s", w, text)
+				}
+			}
+		})
+	}
+}

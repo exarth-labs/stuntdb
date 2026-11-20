@@ -77,13 +77,20 @@ type Column struct {
 	Default    *Default   // nil when the column has no default
 	Generated  *Generated // nil unless the engine computes the column
 	Identity   *Identity  // nil unless the engine numbers the column automatically
-	Collation  string     // empty means the engine's default
+	// Collation is the engine's name for the column's collation. Empty means
+	// the engine's default, or unknown: SQLite reports collations only for
+	// indexed columns, on their keys (Key.Collations).
+	Collation string
 }
 
 // Key is a primary key or a unique constraint.
 type Key struct {
 	Name    Ident // empty when the engine does not name it
 	Columns []Ident
+
+	// Collations says how the key compares each column, in the order of
+	// Columns. nil means every column compares bytes.
+	Collations []Collation
 }
 
 // Action is what a foreign key does when the row it references is deleted or updated.
@@ -131,6 +138,10 @@ type Index struct {
 	Partial    bool   // the index has a WHERE clause
 	Expression bool   // the index uses expressions, not only plain columns
 	Native     string // the engine's own CREATE INDEX statement
+
+	// Collations says how the index compares each of Columns, in their
+	// order. nil means every column compares bytes.
+	Collations []Collation
 }
 
 // Check is a check constraint, kept as the engine's own expression.
