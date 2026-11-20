@@ -24,6 +24,10 @@ func fingerprintDB() *Database {
 				Name:        "orders",
 				Columns:     []*Column{{Name: "id", Type: id}, {Name: "user_id", Type: id}},
 				ForeignKeys: []*ForeignKey{{Columns: []Ident{"user_id"}, Ref: TableRef{"main", "users"}, RefColumns: []Ident{"id"}}},
+				Indexes: []*Index{{
+					Name: "orders_user", Columns: []Ident{"user_id"}, Unique: true,
+					Native: "CREATE UNIQUE INDEX orders_user ON orders (user_id)",
+				}},
 			},
 		},
 	}}}
@@ -46,6 +50,10 @@ func TestFingerprint(t *testing.T) {
 		}},
 		{"an index", func(d *Database) {
 			d.Namespaces[0].Tables[0].Indexes = []*Index{{Name: "users_email", Columns: []Ident{"email"}}}
+		}},
+		{"a unique index's name", func(d *Database) { d.Namespaces[0].Tables[1].Indexes[0].Name = "orders_user_key" }},
+		{"a unique index's native DDL", func(d *Database) {
+			d.Namespaces[0].Tables[1].Indexes[0].Native = "CREATE UNIQUE INDEX orders_user ON orders(user_id)"
 		}},
 		{"statistics", func(d *Database) { d.Namespaces[0].Tables[0].EstimatedRows = 1000 }},
 		{"a view", func(d *Database) { d.Namespaces[0].Objects = []*Object{{Kind: ObjectView, Name: "v"}} }},
@@ -72,6 +80,14 @@ func TestFingerprint(t *testing.T) {
 		{"nullability", func(d *Database) { d.Namespaces[0].Tables[0].Columns[1].Nullable = true }},
 		{"a renamed column", func(d *Database) { d.Namespaces[0].Tables[0].Columns[1].Name = "mail" }},
 		{"a unique key", func(d *Database) { d.Namespaces[0].Tables[0].Uniques = []*Key{{Columns: []Ident{"email"}}} }},
+		{"a unique index", func(d *Database) {
+			d.Namespaces[0].Tables[0].Indexes = []*Index{{Name: "users_email", Columns: []Ident{"email"}, Unique: true}}
+		}},
+		{"a unique index dropped", func(d *Database) { d.Namespaces[0].Tables[1].Indexes = nil }},
+		{"a unique index made not unique", func(d *Database) { d.Namespaces[0].Tables[1].Indexes[0].Unique = false }},
+		{"a unique index's columns", func(d *Database) { d.Namespaces[0].Tables[1].Indexes[0].Columns = []Ident{"id", "user_id"} }},
+		{"a partial unique index", func(d *Database) { d.Namespaces[0].Tables[1].Indexes[0].Partial = true }},
+		{"a unique index on an expression", func(d *Database) { d.Namespaces[0].Tables[1].Indexes[0].Expression = true }},
 		{"a foreign key", func(d *Database) { d.Namespaces[0].Tables[1].ForeignKeys = nil }},
 		{"a generated column", func(d *Database) { d.Namespaces[0].Tables[0].Columns[1].Generated = &Generated{} }},
 	}
